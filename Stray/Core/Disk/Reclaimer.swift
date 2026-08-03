@@ -5,10 +5,6 @@ enum ReclaimError: Error, Equatable {
     case outsideHome
     case isScanRoot
     case commandFailed(Int32)
-    /// One or more Trash entries could not be removed (permissions, locked/uchg files,
-    /// missing Full Disk Access, ...). The associated value is how many entries failed;
-    /// every other entry was still removed.
-    case itemsNotRemoved(Int)
 }
 
 /// The only code in the app allowed to delete anything on disk.
@@ -90,40 +86,26 @@ enum Reclaimer {
         try run(docker, ["image", "prune", "-f"])
     }
 
-    /// Walks the entire Trash synchronously; call this off the main actor.
-    static func trashSize() -> Int64 {
-        let trash = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".Trash")
-        guard FileManager.default.fileExists(atPath: trash.path) else { return 0 }
-        return SizeProbe.size(of: trash)
-    }
-
-    /// Permanently deletes every entry in the Trash. Each entry is validated with
-    /// `assertSafe` before removal, so a relocated (symlinked) Trash can never cause a
-    /// deletion outside home. A stuck entry (permissions, a locked/uchg file, missing Full
-    /// Disk Access, ...) does not abort the rest: every other entry is still removed, and
-    /// the number of failures is reported via `ReclaimError.itemsNotRemoved`.
+    /// Empties the Trash by asking Finder to do it.
     ///
-    /// Walks and deletes the whole Trash synchronously; call this off the main actor.
+    /// `~/.Trash` is TCC-protected: reading or enumerating it requires Full Disk Access,
+    /// which this app deliberately does not request. Finder already holds that access, so
+    /// delegating costs only a one-time Automation prompt instead of blanket disk access.
+    /// Verified on this machine: `contentsOfDirectory` on `~/.Trash` fails with EPERM
+    /// (NSCocoaErrorDomain 257) for a process without FDA.
+    ///
+    /// There is deliberately no `trashSize()` — reporting the Trash's size would require
+    /// the FDA grant this design avoids.
+    ///
+    /// Blocks on the AppleScript round-trip to Finder; call this off the main actor.
     static func emptyTrash() throws {
-        let fm = FileManager.default
-        let trash = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        let entries = (try? fm.contentsOfDirectory(atPath: trash.path)) ?? []
-
-        var failures = 0
-        for entry in entries {
-            let entryURL = trash.appendingPathComponent(entry)
-            do {
-                try assertSafe(entryURL, scanRoots: [])
-                try fm.removeItem(at: entryURL)
-            } catch {
-                failures += 1
-            }
+        let source = "tell application \"Finder\" to empty trash"
+        var error: NSDictionary?
+        guard let script = NSAppleScript(source: source) else {
+            throw ReclaimError.commandFailed(-1)
         }
-
-        guard failures == 0 else {
-            throw ReclaimError.itemsNotRemoved(failures)
-        }
+        script.executeAndReturnError(&error)
+        if error != nil { throw ReclaimError.commandFailed(-2) }
     }
 
     private static func run(_ launchPath: String, _ arguments: [String]) throws {

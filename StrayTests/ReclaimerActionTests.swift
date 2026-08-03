@@ -47,30 +47,3 @@ import Foundation
         try Reclaimer.trash(dir, scanRoots: [dir.appendingPathComponent("project")])
     }
 }
-
-@Test func trashSizeIsNonNegative() {
-    #expect(Reclaimer.trashSize() >= 0)
-}
-
-@Test func trashSizeIncreasesAfterTrashingAFile() throws {
-    let fm = FileManager.default
-    let dir = fm.homeDirectoryForCurrentUser
-        .appendingPathComponent(".stray-trash-\(UUID().uuidString)")
-    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-    defer { try? fm.removeItem(at: dir) }
-
-    let name = "stray-trash-size-\(UUID().uuidString).bin"
-    let file = dir.appendingPathComponent(name)
-    try Data(repeating: 0x2A, count: 4096).write(to: file)
-
-    let trashedURL = fm.homeDirectoryForCurrentUser
-        .appendingPathComponent(".Trash")
-        .appendingPathComponent(name)
-    defer { try? fm.removeItem(at: trashedURL) }
-
-    let before = Reclaimer.trashSize()
-    try Reclaimer.trash(file, scanRoots: [])
-    let after = Reclaimer.trashSize()
-
-    #expect(after > before)
-}
