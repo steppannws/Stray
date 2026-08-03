@@ -46,7 +46,10 @@ import Foundation
 }
 
 @Test func presentOnlyReturnsExistingPaths() {
+    // `present()` includes an entry when at least one of its paths exists (see its
+    // `contains` filter), not when all of them do — relevant now that some entries
+    // (e.g. Yarn) list multiple candidate locations for the same cache.
     for entry in CacheCatalog.present() where entry.reclaim == .trash {
-        #expect(entry.paths.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        #expect(entry.paths.contains { FileManager.default.fileExists(atPath: $0.path) })
     }
 }

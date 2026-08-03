@@ -31,11 +31,11 @@ enum CacheCatalog {
     static let all: [CacheEntry] = [
         // Package manager stores
         CacheEntry(id: "pkg.yarn", name: "Yarn cache",
-                   paths: [h(".yarn-cache")], reclaim: .trash,
+                   paths: [h(".yarn-cache"), h("Library/Caches/Yarn")], reclaim: .trash,
                    regeneratedBy: "Next yarn install"),
         CacheEntry(id: "pkg.pnpm", name: "pnpm store",
-                   paths: [h("Library/pnpm")], reclaim: .trash,
-                   regeneratedBy: "Next pnpm install — existing node_modules symlink into this store and will need reinstalling"),
+                   paths: [h("Library/pnpm/store")], reclaim: .trash,
+                   regeneratedBy: "pnpm repopulates the store as packages are reinstalled — existing node_modules symlink into this store and will need reinstalling"),
         CacheEntry(id: "pkg.npm", name: "npm cache",
                    paths: [h(".npm")], reclaim: .trash,
                    regeneratedBy: "Next npm install"),
@@ -67,7 +67,7 @@ enum CacheCatalog {
         // Allowlisted generic caches
         CacheEntry(id: "cache.dot-cache", name: "~/.cache",
                    paths: [h(".cache")], reclaim: .trash,
-                   regeneratedBy: "The tools that wrote it"),
+                   regeneratedBy: "Re-downloaded by the tools that wrote it — can be a large download if ML tool caches (e.g. huggingface, torch) live here"),
         CacheEntry(id: "cache.homebrew", name: "Homebrew downloads",
                    paths: [h("Library/Caches/Homebrew")], reclaim: .trash,
                    regeneratedBy: "Next brew install"),
