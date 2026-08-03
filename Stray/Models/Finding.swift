@@ -49,7 +49,10 @@ struct Finding: Identifiable, Hashable {
 
     /// `path` doubles as a non-filesystem identifier for cache entries with no existing
     /// location on this machine (see `ScanEngine.cacheFinding`), so this only resolves
-    /// when it actually looks like an absolute path.
+    /// when it actually looks like an absolute path. Not what gates a finding out of
+    /// `SizeProbe` — `reclaimPaths` does that (empty `reclaimPaths` means nothing is ever
+    /// sized, regardless of what `path`/`pathURL` hold). No production caller today; kept
+    /// as a general-purpose accessor for future UI use (e.g. reveal-in-Finder).
     var pathURL: URL? {
         path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
     }

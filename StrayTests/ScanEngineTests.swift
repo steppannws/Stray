@@ -2,9 +2,14 @@ import Testing
 import Foundation
 @testable import Stray
 
-// These two functions are `internal` rather than `private` specifically to make this
-// file possible: neither needs the filesystem or a real disk scan, so there is no
-// reason to defer their correctness to manual QA of the "just wiring" that calls them.
+// `applySize`, `beginSizing`, `removeDiskFinding`, and `cacheFinding` are `internal`
+// rather than `private` specifically to make this file possible: none of them need the
+// filesystem or a real disk scan, so there is no reason to defer their correctness to
+// manual QA of the "just wiring" that calls them.
+//
+// `ScanEngine(startTimer: false)` is used throughout instead of the production
+// `ScanEngine()` so these tests don't each start a live process scan and leave an
+// un-invalidated 5-minute repeating `Timer` running past the test's lifetime.
 
 // MARK: - resolve(_:) / resolveCache
 
@@ -13,7 +18,7 @@ import Foundation
     // `resolveCache`'s catalog join is by title; a title matching no entry must not be a
     // silent no-op. The guard clause runs synchronously before any `Task.detached` is
     // spawned, so this is safe to assert immediately with no async/await.
-    let engine = ScanEngine()
+    let engine = ScanEngine(startTimer: false)
     let orphan = Finding(kind: .toolCache, severity: .info, title: "Not a real cache",
                           detail: "d", pid: nil, path: "/tmp/does-not-exist", startedAt: nil)
 
@@ -22,87 +27,163 @@ import Foundation
     #expect(engine.lastError != nil)
 }
 
-// MARK: - applySize / beginSizing
+// MARK: - beginSizing / removeDiskFinding
+
+@MainActor
+@Test func removeDiskFindingMatchesAcrossARescanByPath() {
+    // Models finding 6: a reclaim in flight for `original` completes after a rescan has
+    // already replaced `diskFindings` with a fresh `Finding` for the same path but a new
+    // id. The completing reclaim only ever knows the *original* value, so removal must
+    // still find the (differently-UUID'd) row by path.
+    let engine = ScanEngine(startTimer: false)
+    let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
+    let original = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
+                            pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
+    engine.beginSizing(for: [original])
+
+    let rescanned = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
+                             pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
+    engine.beginSizing(for: [rescanned]) // simulates the rescan; `rescanned.id != original.id`
+
+    engine.removeDiskFinding(original)
+
+    #expect(engine.diskFindings.isEmpty)
+}
+
+// MARK: - applySize
 
 @MainActor
 @Test func applySizeUpdatesTheMatchingRowOnceItsOnlyPathReports() {
-    let engine = ScanEngine()
+    let engine = ScanEngine(startTimer: false)
     let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
     let finding = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
                            pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
     engine.beginSizing(for: [finding])
 
-    engine.applySize(1234, to: url)
+    engine.applySize(1234, to: url, generation: engine.sizingGeneration)
 
     #expect(engine.diskFindings.first?.bytes == 1234)
 }
 
 @MainActor
 @Test func applySizeIgnoresAPathThatMatchesNoRow() {
-    let engine = ScanEngine()
+    let engine = ScanEngine(startTimer: false)
     let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
     let finding = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
                            pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
     engine.beginSizing(for: [finding])
 
     let unrelated = URL(fileURLWithPath: "/tmp/stray-test-unrelated-\(UUID().uuidString)")
-    engine.applySize(999, to: unrelated)
+    engine.applySize(999, to: unrelated, generation: engine.sizingGeneration)
 
     #expect(engine.diskFindings.first?.bytes == nil)
 }
 
 @MainActor
-@Test func applySizeForARowRemovedSinceTheScanIsANoOp() {
-    let engine = ScanEngine()
-    let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
-    let finding = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
-                           pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
-    engine.beginSizing(for: [finding])
-    engine.diskFindings.removeAll() // simulate a reclaim that already removed the row
+@Test func applySizeForARemovedRowIsANoOpAndDoesNotAffectOtherRows() {
+    // A stronger version of "removed row is a no-op": proves both that the removed row
+    // isn't resurrected/doesn't crash, and that a still-present row is unaffected and
+    // continues to size normally in the same batch.
+    let engine = ScanEngine(startTimer: false)
+    let urlA = URL(fileURLWithPath: "/tmp/stray-test-a-\(UUID().uuidString)")
+    let urlB = URL(fileURLWithPath: "/tmp/stray-test-b-\(UUID().uuidString)")
+    let findingA = Finding(kind: .projectJunk, severity: .info, title: "a", detail: "d",
+                            pid: nil, path: urlA.path, startedAt: nil, reclaimPaths: [urlA])
+    let findingB = Finding(kind: .projectJunk, severity: .info, title: "b", detail: "d",
+                            pid: nil, path: urlB.path, startedAt: nil, reclaimPaths: [urlB])
+    engine.beginSizing(for: [findingA, findingB])
+    engine.removeDiskFinding(findingA) // simulate a reclaim of A completing mid-scan
 
-    engine.applySize(1234, to: url) // must neither crash nor resurrect the row
+    engine.applySize(999, to: urlA, generation: engine.sizingGeneration) // late report for the removed row
+    engine.applySize(50, to: urlB, generation: engine.sizingGeneration)
 
-    #expect(engine.diskFindings.isEmpty)
+    #expect(engine.diskFindings.map(\.title) == ["b"])
+    #expect(engine.diskFindings.first?.bytes == 50)
 }
 
 @MainActor
 @Test func applySizeOnlyFinalizesBytesOnceEveryReclaimPathHasReported() {
     // The core of the sized-equals-deleted invariant: a cache backed by two on-disk
     // locations (e.g. Yarn) must show the sum of both, not the first one to answer.
-    let engine = ScanEngine()
+    let engine = ScanEngine(startTimer: false)
     let urlA = URL(fileURLWithPath: "/tmp/stray-test-a-\(UUID().uuidString)")
     let urlB = URL(fileURLWithPath: "/tmp/stray-test-b-\(UUID().uuidString)")
     let finding = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
                            pid: nil, path: urlA.path, startedAt: nil, reclaimPaths: [urlA, urlB])
     engine.beginSizing(for: [finding])
 
-    engine.applySize(100, to: urlA)
+    engine.applySize(100, to: urlA, generation: engine.sizingGeneration)
     #expect(engine.diskFindings.first?.bytes == nil) // only one of two paths in: still unknown
 
-    engine.applySize(50, to: urlB)
+    engine.applySize(50, to: urlB, generation: engine.sizingGeneration)
     #expect(engine.diskFindings.first?.bytes == 150) // both in: the sum is now final
 }
 
 @MainActor
-@Test func applySizeSortsDescendingWithATitleTiebreak() {
-    let engine = ScanEngine()
+@Test func applySizeIgnoresALateOrDuplicateReportForAnAlreadyFinalizedRow() {
+    // N2(a): re-finalizing on a second report for the same (already-complete) path used
+    // to overwrite the correct sum with a single path's bytes, understating what the
+    // reclaim button would actually remove.
+    let engine = ScanEngine(startTimer: false)
+    let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
+    let finding = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
+                           pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
+    engine.beginSizing(for: [finding])
+
+    engine.applySize(100, to: url, generation: engine.sizingGeneration) // finalizes at 100
+    engine.applySize(999, to: url, generation: engine.sizingGeneration) // late duplicate
+
+    #expect(engine.diskFindings.first?.bytes == 100)
+}
+
+@MainActor
+@Test func applySizeDropsAReportFromAStaleSizingGeneration() {
+    // N2(b): a report tagged with an earlier `scanDisk()` pass's generation must be
+    // dropped even though it targets a path a *current* row also happens to use — this
+    // is what keeps a slow-draining previous pass from corrupting the current one when
+    // task ordering isn't structurally guaranteed.
+    let engine = ScanEngine(startTimer: false)
+    let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
+    let finding = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
+                           pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
+
+    engine.beginSizing(for: [finding])
+    let staleGeneration = engine.sizingGeneration
+    engine.beginSizing(for: [finding]) // a second pass starts; generation advances
+
+    engine.applySize(500, to: url, generation: staleGeneration)
+
+    #expect(engine.diskFindings.first?.bytes == nil) // dropped, not applied
+}
+
+@MainActor
+@Test func applySizeSortsDescendingWithATitleTiebreakOnEqualSizes() {
+    // Must actually exercise a tie: two rows with equal (non-nil) bytes, and two more
+    // with equal nil bytes, both seeded in reverse-title order. Deleting the tiebreak
+    // from `sortDiskFindings` must make this fail.
+    let engine = ScanEngine(startTimer: false)
+    let urlZ = URL(fileURLWithPath: "/tmp/stray-test-z-\(UUID().uuidString)")
     let urlA = URL(fileURLWithPath: "/tmp/stray-test-a-\(UUID().uuidString)")
-    let urlB = URL(fileURLWithPath: "/tmp/stray-test-b-\(UUID().uuidString)")
-    let small = Finding(kind: .projectJunk, severity: .info, title: "small", detail: "d",
-                         pid: nil, path: urlA.path, startedAt: nil, reclaimPaths: [urlA])
-    let big = Finding(kind: .projectJunk, severity: .info, title: "big", detail: "d",
-                       pid: nil, path: urlB.path, startedAt: nil, reclaimPaths: [urlB])
-    engine.beginSizing(for: [small, big])
+    let sizedZ = Finding(kind: .projectJunk, severity: .info, title: "z-sized", detail: "d",
+                          pid: nil, path: urlZ.path, startedAt: nil, reclaimPaths: [urlZ])
+    let sizedA = Finding(kind: .projectJunk, severity: .info, title: "a-sized", detail: "d",
+                          pid: nil, path: urlA.path, startedAt: nil, reclaimPaths: [urlA])
+    // No reclaimPaths: bytes stays nil forever, seeded in reverse-title order too.
+    let unsizedZ = Finding(kind: .toolCache, severity: .info, title: "z-unsized", detail: "d",
+                            pid: nil, path: "test.z-unsized", startedAt: nil)
+    let unsizedA = Finding(kind: .toolCache, severity: .info, title: "a-unsized", detail: "d",
+                            pid: nil, path: "test.a-unsized", startedAt: nil)
+    engine.beginSizing(for: [sizedZ, sizedA, unsizedZ, unsizedA])
 
-    engine.applySize(10, to: urlA)
-    engine.applySize(1000, to: urlB)
+    engine.applySize(500, to: urlZ, generation: engine.sizingGeneration)
+    engine.applySize(500, to: urlA, generation: engine.sizingGeneration) // equal to the above
 
-    #expect(engine.diskFindings.map(\.title) == ["big", "small"])
+    #expect(engine.diskFindings.map(\.title) == ["a-sized", "z-sized", "a-unsized", "z-unsized"])
 }
 
 @MainActor
 @Test func reclaimableBytesSumsOnlyNonNilBytes() {
-    let engine = ScanEngine()
+    let engine = ScanEngine(startTimer: false)
     let sizedURL = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
     let sized = Finding(kind: .projectJunk, severity: .info, title: "a", detail: "d",
                          pid: nil, path: sizedURL.path, startedAt: nil, reclaimPaths: [sizedURL])
@@ -111,7 +192,7 @@ import Foundation
                            pid: nil, path: "test.simctl", startedAt: nil)
     engine.beginSizing(for: [sized, unsized])
 
-    engine.applySize(100, to: sizedURL)
+    engine.applySize(100, to: sizedURL, generation: engine.sizingGeneration)
 
     #expect(engine.reclaimableBytes == 100)
 }
@@ -119,8 +200,10 @@ import Foundation
 // MARK: - cacheFinding path selection
 
 @Test func cacheFindingPicksTheFirstExistingPathWhenTheFirstListedOneIsAbsent() throws {
+    // `cacheFinding` has no home-directory constraint (only `Reclaimer.trash`'s
+    // `assertSafe` does), so a plain temp directory is enough here.
     let fm = FileManager.default
-    let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".stray-cache-\(UUID().uuidString)")
+    let root = fm.temporaryDirectory.appendingPathComponent(".stray-cache-\(UUID().uuidString)")
     defer { try? fm.removeItem(at: root) }
     let missing = root.appendingPathComponent("missing")
     let present = root.appendingPathComponent("present")
@@ -137,7 +220,8 @@ import Foundation
 @Test func cacheFindingWithNoExistingPathFallsBackToTheFirstListedPath() {
     // Shouldn't happen via `CacheCatalog.present()` (which filters for existence), but
     // `cacheFinding` itself must still degrade sanely rather than crash or size nothing.
-    let root = URL(fileURLWithPath: "/tmp/stray-cache-nonexistent-\(UUID().uuidString)")
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("stray-cache-nonexistent-\(UUID().uuidString)")
     let entry = CacheEntry(id: "test.absent", name: "Test absent cache",
                             paths: [root], reclaim: .trash, regeneratedBy: "test")
     let finding = ScanEngine.cacheFinding(entry)
@@ -147,8 +231,9 @@ import Foundation
 }
 
 @Test func cacheFindingWithNoPathsAtAllUsesTheEntryIDAndHasNoPathURL() {
-    // Mirrors the real `docker.dangling` catalog entry. `pathURL == nil` is the only
-    // thing that keeps this non-path identifier out of `SizeProbe`.
+    // Mirrors the real `docker.dangling` catalog entry. `reclaimPaths` (empty here) is
+    // what actually keeps this non-path identifier out of `SizeProbe`; `pathURL == nil`
+    // is a separate, additional invariant worth holding too.
     let entry = CacheEntry(id: "docker.dangling", name: "Docker dangling images",
                             paths: [], reclaim: .dockerImagePrune, regeneratedBy: "test")
     let finding = ScanEngine.cacheFinding(entry)
@@ -163,7 +248,7 @@ import Foundation
     // (`simctl delete unavailable`) that only removes an orphaned subset of it. Sizing
     // the whole directory would grossly overstate what the button actually frees.
     let fm = FileManager.default
-    let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".stray-cache-\(UUID().uuidString)")
+    let root = fm.temporaryDirectory.appendingPathComponent(".stray-cache-\(UUID().uuidString)")
     try fm.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? fm.removeItem(at: root) }
 
