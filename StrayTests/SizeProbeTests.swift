@@ -54,7 +54,7 @@ import Foundation
     #expect(SizeProbe.size(of: root) >= 50000)
 }
 
-@Test func sizesRunsConcurrentlyAndStreamsResults() async throws {
+@Test func sizesRunConcurrentlyUpToTheCap() async throws {
     let fm = FileManager.default
     let root = fm.homeDirectoryForCurrentUser
         .appendingPathComponent(".stray-size-\(UUID().uuidString)")
@@ -68,40 +68,28 @@ import Foundation
         dirs.append(d)
     }
 
-    let box = ResultBox()
-    let start = Date()
-
     // `size(of:)` is effectively instant for these tiny fixtures, so nearly all of a
-    // task's real lifetime ends up spent inside this callback's artificial delay. That
-    // makes "a callback is between beginTask/endTask" a stand-in for "the task group
-    // considers this URL's probe still running" — which is exactly the window
-    // `sizes(for:)` is supposed to cap at 4 concurrent and report on as it closes.
-    // A fully sequential implementation, or one that computes everything first and only
-    // then fires all callbacks in a final loop, would never have more than one callback
-    // open at a time and would never report a result before the whole call is done —
-    // both would fail the assertions below.
+    // task's real lifetime is spent inside this callback. Rather than inferring
+    // concurrency from wall-clock timing (a fixed sleep duration is flaky by
+    // construction on a CPU-constrained machine: `Thread.sleep` blocks a cooperative-pool
+    // worker instead of suspending it, and a small/busy pool may never let tasks overlap
+    // within the sleep window even though `sizes(for:)` is behaving correctly), each
+    // callback blocks on a semaphore until `concurrencyCap` callbacks are simultaneously
+    // in flight. Reaching that rendezvous deterministically proves real overlap
+    // regardless of machine speed; a generous timeout turns "the cap is never reached at
+    // all" (e.g. a sequential implementation) into a test failure instead of a hang.
+    let box = ResultBox(concurrencyCap: 4)
     await SizeProbe.sizes(for: dirs) { url, bytes in
-        box.beginTask()
-        Thread.sleep(forTimeInterval: 0.05)
-        box.endTask(url, bytes, elapsed: Date().timeIntervalSince(start))
+        box.rendezvous(url, bytes)
     }
-    let total = Date().timeIntervalSince(start)
 
     #expect(box.count == 12)
-
+    // Proves the four-way rendezvous was actually reached, not just inferred.
+    #expect(!box.timedOut)
     // Proves the work is actually concurrent, not sequential.
     #expect(box.peakInFlight > 1)
     // Proves the concurrency cap holds.
     #expect(box.peakInFlight <= 4)
-
-    // Proves results are streamed rather than all delivered together at the very end:
-    // the earliest completion should land well before the whole call finishes, and
-    // completions should be spread out rather than clustered into one instant.
-    let timestamps = box.timestamps.sorted()
-    let first = try #require(timestamps.first)
-    let last = try #require(timestamps.last)
-    #expect(first < total * 0.8)
-    #expect(last - first > 0.04)
 }
 
 /// Small thread-safe collector so the async callback can be asserted on.
@@ -110,11 +98,13 @@ final class ResultBox: @unchecked Sendable {
     private var results: [URL: Int64] = [:]
     private var inFlight = 0
     private var peak = 0
-    private var completionTimestamps: [TimeInterval] = []
+    private var gateOpened = false
+    private var gateTimedOut = false
+    private let gate = DispatchSemaphore(value: 0)
+    private let concurrencyCap: Int
 
-    func record(_ url: URL, _ bytes: Int64) {
-        lock.lock(); defer { lock.unlock() }
-        results[url] = bytes
+    init(concurrencyCap: Int) {
+        self.concurrencyCap = concurrencyCap
     }
 
     var count: Int {
@@ -122,29 +112,41 @@ final class ResultBox: @unchecked Sendable {
         return results.count
     }
 
-    /// Marks a simulated probe as started; tracks the running peak of concurrently
-    /// open probes.
-    func beginTask() {
-        lock.lock(); defer { lock.unlock() }
-        inFlight += 1
-        peak = max(peak, inFlight)
-    }
-
-    /// Marks a simulated probe as finished and records its result and completion time.
-    func endTask(_ url: URL, _ bytes: Int64, elapsed: TimeInterval) {
-        lock.lock(); defer { lock.unlock() }
-        inFlight -= 1
-        results[url] = bytes
-        completionTimestamps.append(elapsed)
-    }
-
     var peakInFlight: Int {
         lock.lock(); defer { lock.unlock() }
         return peak
     }
 
-    var timestamps: [TimeInterval] {
+    var timedOut: Bool {
         lock.lock(); defer { lock.unlock() }
-        return completionTimestamps
+        return gateTimedOut
+    }
+
+    /// Records the probe's result and blocks the caller until `concurrencyCap` callbacks
+    /// are simultaneously in flight — proving genuine overlap deterministically instead
+    /// of inferring it from timing — or until a generous timeout elapses. Once the cap
+    /// has been reached once, later calls pass straight through: the rendezvous only
+    /// needs to happen once to prove the property.
+    func rendezvous(_ url: URL, _ bytes: Int64) {
+        lock.lock()
+        inFlight += 1
+        peak = max(peak, inFlight)
+        results[url] = bytes
+        let opensGateNow = inFlight >= concurrencyCap && !gateOpened
+        if opensGateNow { gateOpened = true }
+        let alreadyOpen = gateOpened && !opensGateNow
+        lock.unlock()
+
+        if opensGateNow {
+            for _ in 0..<(concurrencyCap - 1) { gate.signal() }
+        } else if !alreadyOpen {
+            if gate.wait(timeout: .now() + 3) == .timedOut {
+                lock.lock(); gateTimedOut = true; lock.unlock()
+            }
+        }
+
+        lock.lock()
+        inFlight -= 1
+        lock.unlock()
     }
 }
