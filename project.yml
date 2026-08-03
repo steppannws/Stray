@@ -21,3 +21,24 @@ targets:
         CODE_SIGN_STYLE: Automatic
         # No App Sandbox on purpose: we need to list all of the user's processes
         ENABLE_APP_SANDBOX: false
+  StrayTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [StrayTests]
+    dependencies:
+      - target: Stray
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        GENERATE_INFOPLIST_FILE: true
+schemes:
+  Stray:
+    build:
+      targets:
+        Stray: all
+        StrayTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [StrayTests]
