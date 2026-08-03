@@ -7,10 +7,11 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            // Single scrollable region for both lists plus the error banner, so the
-            // two independently-populated sections share one height budget instead of
-            // each growing (or scrolling) on its own. The footer lives outside this
-            // ScrollView so it always stays reachable regardless of content height.
+            // Single scrollable region for just the two row lists, so they share one
+            // height budget instead of each growing (or scrolling) on its own. Everything
+            // that must stay visible without scrolling — the disk header ("Scan disk" /
+            // "Reclaimable:"), the error banner, and the footer — is pinned outside this
+            // ScrollView.
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if engine.findings.isEmpty {
@@ -19,10 +20,15 @@ struct MenuView: View {
                         findingsList
                     }
                     Divider()
-                    diskSection
+                    diskRows
                 }
             }
             .frame(maxHeight: 480)
+            Divider()
+            diskHeader
+            if let lastError = engine.lastError {
+                errorBanner(lastError)
+            }
             Divider()
             footer
         }
@@ -67,29 +73,31 @@ struct MenuView: View {
         }
     }
 
-    private var diskSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Disk").font(.subheadline).fontWeight(.medium)
-                Spacer()
-                if engine.isDiskScanning {
-                    ProgressView().controlSize(.small)
-                }
-                if engine.diskFindings.isEmpty {
-                    Button("Scan disk") { engine.scanDisk() }
-                        .buttonStyle(.borderless).font(.caption)
-                        .disabled(engine.isDiskScanning)
-                } else {
-                    Text("Reclaimable: \(ByteCountFormatter.string(fromByteCount: engine.reclaimableBytes, countStyle: .file))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+    /// Pinned outside the ScrollView (see `body`) so "Scan disk" and the running
+    /// "Reclaimable:" total are always visible without scrolling, even with a long
+    /// process list.
+    private var diskHeader: some View {
+        HStack {
+            Text("Disk").font(.subheadline).fontWeight(.medium)
+            Spacer()
+            if engine.isDiskScanning {
+                ProgressView().controlSize(.small)
             }
-            .padding(10)
-
-            if let lastError = engine.lastError {
-                errorBanner(lastError)
+            if engine.diskFindings.isEmpty {
+                Button("Scan disk") { engine.scanDisk() }
+                    .buttonStyle(.borderless).font(.caption)
+                    .disabled(engine.isDiskScanning)
+            } else {
+                Text("Reclaimable: \(ByteCountFormatter.string(fromByteCount: engine.reclaimableBytes, countStyle: .file))")
+                    .font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .padding(10)
+    }
 
+    /// The disk findings themselves; lives inside the shared ScrollView in `body`.
+    private var diskRows: some View {
+        Group {
             if !engine.diskFindings.isEmpty {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(engine.diskFindings) { finding in
