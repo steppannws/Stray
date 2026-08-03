@@ -55,6 +55,12 @@ import Foundation
 }
 
 @Test func presentOnlyReturnsExistingPaths() {
+    // Without this, the loop below passes vacuously if `present()` returns an empty
+    // array — it would re-implement `present()`'s own predicate and assert it against
+    // `present()`'s own output, catching nothing. Homebrew's cache and Xcode DerivedData
+    // exist on any dev Mac that has ever built this project, so this is safe to assert.
+    #expect(!CacheCatalog.present().isEmpty)
+
     // `present()` includes an entry when at least one of its paths exists (see its
     // `contains` filter), not when all of them do — relevant now that some entries
     // (e.g. Yarn) list multiple candidate locations for the same cache.
