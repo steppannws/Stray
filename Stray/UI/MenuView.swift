@@ -7,13 +7,22 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if engine.findings.isEmpty {
-                emptyState
-            } else {
-                findingsList
+            // Single scrollable region for both lists plus the error banner, so the
+            // two independently-populated sections share one height budget instead of
+            // each growing (or scrolling) on its own. The footer lives outside this
+            // ScrollView so it always stays reachable regardless of content height.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if engine.findings.isEmpty {
+                        emptyState
+                    } else {
+                        findingsList
+                    }
+                    Divider()
+                    diskSection
+                }
             }
-            Divider()
-            diskSection
+            .frame(maxHeight: 480)
             Divider()
             footer
         }
@@ -48,17 +57,14 @@ struct MenuView: View {
     }
 
     private var findingsList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(engine.findings) { finding in
-                    FindingRow(finding: finding) {
-                        engine.resolve(finding)
-                    }
-                    Divider().padding(.leading, 10)
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(engine.findings) { finding in
+                FindingRow(finding: finding) {
+                    engine.resolve(finding)
                 }
+                Divider().padding(.leading, 10)
             }
         }
-        .frame(maxHeight: 420)
     }
 
     private var diskSection: some View {
@@ -72,6 +78,7 @@ struct MenuView: View {
                 if engine.diskFindings.isEmpty {
                     Button("Scan disk") { engine.scanDisk() }
                         .buttonStyle(.borderless).font(.caption)
+                        .disabled(engine.isDiskScanning)
                 } else {
                     Text("Reclaimable: \(ByteCountFormatter.string(fromByteCount: engine.reclaimableBytes, countStyle: .file))")
                         .font(.caption).foregroundStyle(.secondary)
@@ -84,15 +91,12 @@ struct MenuView: View {
             }
 
             if !engine.diskFindings.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(engine.diskFindings) { finding in
-                            FindingRow(finding: finding) { engine.resolve(finding) }
-                            Divider().padding(.leading, 10)
-                        }
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(engine.diskFindings) { finding in
+                        FindingRow(finding: finding) { engine.resolve(finding) }
+                        Divider().padding(.leading, 10)
                     }
                 }
-                .frame(maxHeight: 260)
             }
         }
     }
@@ -123,6 +127,7 @@ struct MenuView: View {
             if !engine.diskFindings.isEmpty || engine.lastDiskScan != nil {
                 Button("Empty Trash") { engine.emptyTrash() }
                     .buttonStyle(.borderless).font(.caption2)
+                    .help("Asks Finder to empty the Trash. macOS will prompt once to allow Stray to control Finder.")
             }
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless).font(.caption)
