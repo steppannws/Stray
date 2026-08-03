@@ -6,6 +6,8 @@ enum FindingKind: String, CaseIterable {
     case duplicate = "Duplicate"
     case orphanLaunchd = "Orphan launchd"
     case staleDevServer = "Stale dev server"
+    case projectJunk = "Project junk"
+    case toolCache = "Tool cache"
 }
 
 enum Severity: Int, Comparable {
@@ -23,11 +25,25 @@ struct Finding: Identifiable, Hashable {
     var extraPIDs: [pid_t] = [] // sibling instances killed in the same batch
     let path: String         // binary or plist
     let startedAt: Date?
+    var bytes: Int64?           // nil while sizing is in flight
+    var isActiveProject = false // project files touched in the last 7 days
 
     var uptimeDescription: String {
         guard let startedAt else { return "—" }
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
         return f.localizedString(for: startedAt, relativeTo: Date())
+    }
+
+    var sizeDescription: String {
+        guard let bytes else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// `path` doubles as a non-filesystem identifier for cache entries with no existing
+    /// location on this machine (see `ScanEngine.cacheFinding`), so this only resolves
+    /// when it actually looks like an absolute path.
+    var pathURL: URL? {
+        path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
     }
 }
