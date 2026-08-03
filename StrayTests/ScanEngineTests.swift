@@ -2,10 +2,12 @@ import Testing
 import Foundation
 @testable import Stray
 
-// `applySize`, `beginSizing`, `removeDiskFinding`, and `cacheFinding` are `internal`
-// rather than `private` specifically to make this file possible: none of them need the
-// filesystem or a real disk scan, so there is no reason to defer their correctness to
-// manual QA of the "just wiring" that calls them.
+// `applySize`, `beginSizing`, `removeDiskFinding`, `beginReclaim`/`endReclaim`, and
+// `cacheFinding` are `internal` rather than `private` specifically to make this file
+// possible: none of them need the filesystem or a real disk scan (in particular,
+// `beginReclaim`/`endReclaim` let the in-flight guard be tested without invoking a real
+// Reclaimer call), so there is no reason to defer their correctness to manual QA of the
+// "just wiring" that calls them.
 //
 // `ScanEngine(startTimer: false)` is used throughout instead of the production
 // `ScanEngine()` so these tests don't each start a live process scan and leave an
@@ -48,6 +50,66 @@ import Foundation
     engine.removeDiskFinding(original)
 
     #expect(engine.diskFindings.isEmpty)
+}
+
+@MainActor
+@Test func removeDiskFindingRemovesARowThatReappearedUnderADifferentDisplayPath() {
+    // The multi-path variant of finding 6, reported as an Important in round 3: a
+    // reclaim starts on `original` (display path = urlX, one of two reclaim paths). By
+    // the time it completes, a rescan has landed mid-reclaim (urlX already trashed, urlY
+    // still present) and replaced the row with `reappeared`, whose display path is now
+    // urlY — a *different* string from `original.path`, and a different id. Matching on
+    // id-or-path alone (the round-1/2 fix) would miss this; matching when `reclaimPaths`
+    // intersect must still find it.
+    let engine = ScanEngine(startTimer: false)
+    let urlX = URL(fileURLWithPath: "/tmp/stray-test-x-\(UUID().uuidString)")
+    let urlY = URL(fileURLWithPath: "/tmp/stray-test-y-\(UUID().uuidString)")
+    let original = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
+                            pid: nil, path: urlX.path, startedAt: nil, reclaimPaths: [urlX, urlY])
+    let reappeared = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
+                              pid: nil, path: urlY.path, startedAt: nil, reclaimPaths: [urlY])
+    engine.beginSizing(for: [reappeared]) // simulates the rescan replacing diskFindings
+
+    engine.removeDiskFinding(original) // the completing reclaim only knows `original`
+
+    #expect(engine.diskFindings.isEmpty)
+}
+
+// MARK: - beginReclaim / endReclaim
+
+@MainActor
+@Test func beginReclaimBlocksASecondConfirmWhenTheDisplayPathHasShiftedToAnotherReclaimPath() {
+    // The other half of the same round-3 scenario: while `original`'s reclaim is in
+    // flight (urlX display path, urlX+urlY reclaim paths), a rescan lands and the row
+    // reappears with urlY as its new display path. Confirming the reappeared row must
+    // still be blocked — a guard keyed only on the display path would miss this, since
+    // "urlY" was never itself inserted as the sole in-flight key by the first confirm
+    // (it's only in-flight as part of `original`'s multi-path identity set).
+    let engine = ScanEngine(startTimer: false)
+    let urlX = URL(fileURLWithPath: "/tmp/stray-test-x-\(UUID().uuidString)")
+    let urlY = URL(fileURLWithPath: "/tmp/stray-test-y-\(UUID().uuidString)")
+    let original = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
+                            pid: nil, path: urlX.path, startedAt: nil, reclaimPaths: [urlX, urlY])
+    let reappeared = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
+                              pid: nil, path: urlY.path, startedAt: nil, reclaimPaths: [urlY])
+
+    #expect(engine.beginReclaim(for: original)) // first confirm: proceeds
+
+    #expect(!engine.beginReclaim(for: reappeared)) // second confirm on the reappeared row: blocked
+}
+
+@MainActor
+@Test func endReclaimClearsEveryIdentityKeySoAFutureConfirmForTheSamePathIsAllowedAgain() {
+    let engine = ScanEngine(startTimer: false)
+    let urlX = URL(fileURLWithPath: "/tmp/stray-test-x-\(UUID().uuidString)")
+    let urlY = URL(fileURLWithPath: "/tmp/stray-test-y-\(UUID().uuidString)")
+    let finding = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
+                           pid: nil, path: urlX.path, startedAt: nil, reclaimPaths: [urlX, urlY])
+
+    #expect(engine.beginReclaim(for: finding))
+    engine.endReclaim(for: finding)
+
+    #expect(engine.beginReclaim(for: finding)) // cleared: a later confirm is allowed again
 }
 
 // MARK: - applySize

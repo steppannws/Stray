@@ -26,10 +26,18 @@ final class ScanEngine: ObservableObject {
     /// only happens after the blocking Reclaimer call returns, so a second tap before
     /// that would otherwise fire a second `Reclaimer.trash` on an already-trashed path.
     ///
-    /// Keyed on `path`, not `Finding.id`: a rescan replaces `diskFindings` wholesale with
-    /// fresh `Finding` values carrying new UUIDs (see `removeDiskFinding`), so an id-keyed
-    /// guard would miss a reappeared row for the same still-in-flight path and let a
-    /// second confirm through. `path` is stable across a rescan; `id` is not.
+    /// Keyed on the *set* of a finding's identity paths (see `reclaimKeys(for:)`), not
+    /// just its single display `path` or its `Finding.id`. A rescan replaces
+    /// `diskFindings` wholesale with fresh `Finding` values carrying new UUIDs, so an
+    /// id-keyed guard misses a reappeared row entirely. A single-`path`-keyed guard is
+    /// still not enough for a multi-path cache entry (e.g. Yarn, backed by two possible
+    /// locations): `cacheFinding` picks whichever of `reclaimPaths` exists first as the
+    /// *display* `path`, so a reclaim that trashes the first of two paths and then races
+    /// a rescan can see the row reappear with the *second* path as its new display
+    /// `path` — a guard keyed only on the display path would miss that it's the same
+    /// in-flight reclaim. Keying on the union of `reclaimPaths` and `path` closes that:
+    /// both the original and the reappeared row's identity sets share at least the paths
+    /// still being (or already) trashed.
     private var inFlight: Set<String> = []
     /// Same guard as `inFlight`, kept separate because emptying the Trash has no
     /// corresponding `Finding` row to key off.
@@ -90,8 +98,7 @@ final class ScanEngine: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.scan() }
 
         case .projectJunk:
-            guard !inFlight.contains(finding.path) else { return }
-            inFlight.insert(finding.path)
+            guard beginReclaim(for: finding) else { return }
             lastError = nil
 
             let roots = DiskScanner.defaultRoots
@@ -102,12 +109,12 @@ final class ScanEngine: ObservableObject {
                     await MainActor.run {
                         self.removeDiskFinding(finding)
                         self.lastError = nil
-                        self.inFlight.remove(finding.path)
+                        self.endReclaim(for: finding)
                     }
                 } catch {
                     await MainActor.run {
                         self.lastError = "Could not remove \(finding.title): \(error.localizedDescription)"
-                        self.inFlight.remove(finding.path)
+                        self.endReclaim(for: finding)
                     }
                 }
             }
@@ -125,11 +132,54 @@ final class ScanEngine: ObservableObject {
         }
     }
 
+    /// A finding's identity for the purposes of the in-flight guard and
+    /// `removeDiskFinding`'s matching: the union of every path a reclaim of it will
+    /// actually touch (`reclaimPaths`) and its display `path`. For a single-path finding
+    /// (project junk, or a single-path cache entry) this is one element and behaves
+    /// exactly like matching on `path` alone. For a multi-path cache entry it is every
+    /// candidate location, so a row that reappears after a rescan with a *different* one
+    /// of those locations as its new display `path` (see `inFlight`'s doc comment) still
+    /// shares at least one key with the in-flight reclaim.
+    private nonisolated static func reclaimKeys(for finding: Finding) -> Set<String> {
+        Set(finding.reclaimPaths.map(\.path)).union([finding.path])
+    }
+
+    /// Marks `finding`'s reclaim as in flight, or refuses if any of its identity keys
+    /// already are — the double-confirm guard. Returns `false` (having done nothing) if
+    /// blocked; the caller must eventually call `endReclaim(for:)` on both the success
+    /// and failure paths of whatever it does after a `true` return.
+    ///
+    /// Internal (not `private`) so tests can exercise the guard directly rather than
+    /// through `resolve(_:)`, which would require actually invoking a Reclaimer call.
+    func beginReclaim(for finding: Finding) -> Bool {
+        let keys = Self.reclaimKeys(for: finding)
+        guard inFlight.isDisjoint(with: keys) else { return false }
+        inFlight.formUnion(keys)
+        return true
+    }
+
+    /// Internal for the same reason as `beginReclaim(for:)`.
+    func endReclaim(for finding: Finding) {
+        inFlight.subtract(Self.reclaimKeys(for: finding))
+    }
+
+    /// Thrown by `trashAll` when handed no paths — a signal that whatever constructed the
+    /// `Finding` failed to populate `reclaimPaths` (it defaults to `[]`), not a
+    /// legitimate "nothing to do". Without this, an empty list would let `trashAll`
+    /// return cleanly, and the caller would treat that as success and remove the row —
+    /// a confirm button that silently does nothing instead of surfacing the bug.
+    private struct EmptyReclaimPathsError: LocalizedError {
+        var errorDescription: String? {
+            "Nothing to reclaim (reclaimPaths was empty) — this is a bug, not a user-facing failure."
+        }
+    }
+
     /// Trashes every path in order, capturing (and re-throwing) only the first failure so
     /// a multi-path reclaim still attempts every path rather than aborting after one.
     /// Shared by project-junk removal and the `.trash` branch of `resolveCache` — both
     /// reduce to "trash this exact list of `reclaimPaths`".
     private nonisolated static func trashAll(_ paths: [URL], scanRoots: [URL]) throws {
+        guard !paths.isEmpty else { throw EmptyReclaimPathsError() }
         var firstError: Error?
         for path in paths {
             do {
@@ -144,16 +194,23 @@ final class ScanEngine: ObservableObject {
     /// A rescan replaces `diskFindings` wholesale with fresh `Finding` values carrying
     /// new UUIDs, so a reclaim started before a rescan and completing after one would
     /// find no `id` match and leave a phantom row for an already-trashed path. Matching
-    /// on `path` too closes that gap. Also drops any leftover sizing bookkeeping for the
-    /// removed row(s), in case a reclaim completes mid-scan while sizing was still
-    /// pending for that finding.
+    /// on `path` too closes most of that gap, but not a multi-path cache entry whose
+    /// display path shifted to a different one of its `reclaimPaths` after a rescan (see
+    /// `inFlight`'s doc comment) — matching when `reclaimPaths` intersect closes the rest.
+    /// Also drops any leftover sizing bookkeeping for the removed row(s), in case a
+    /// reclaim completes mid-scan while sizing was still pending for that finding.
     ///
     /// Internal (not `private`) so tests can exercise the rescan-survival case directly.
     func removeDiskFinding(_ finding: Finding) {
-        let removedIDs = diskFindings
-            .filter { $0.id == finding.id || $0.path == finding.path }
-            .map(\.id)
-        diskFindings.removeAll { $0.id == finding.id || $0.path == finding.path }
+        let targetPaths = Set(finding.reclaimPaths.map(\.path))
+        func matches(_ row: Finding) -> Bool {
+            row.id == finding.id
+                || row.path == finding.path
+                || !Set(row.reclaimPaths.map(\.path)).isDisjoint(with: targetPaths)
+        }
+
+        let removedIDs = diskFindings.filter(matches).map(\.id)
+        diskFindings.removeAll(where: matches)
         for id in removedIDs {
             pendingSizeCounts[id] = nil
             pendingSizeSums[id] = nil
@@ -305,8 +362,7 @@ final class ScanEngine: ObservableObject {
             lastError = "Could not clear \(finding.title): no matching catalog entry."
             return
         }
-        guard !inFlight.contains(finding.path) else { return }
-        inFlight.insert(finding.path)
+        guard beginReclaim(for: finding) else { return }
         lastError = nil
 
         // Trash exactly the paths that were sized for this row (`finding.reclaimPaths`),
@@ -327,12 +383,12 @@ final class ScanEngine: ObservableObject {
                 await MainActor.run {
                     self.removeDiskFinding(finding)
                     self.lastError = nil
-                    self.inFlight.remove(finding.path)
+                    self.endReclaim(for: finding)
                 }
             } catch {
                 await MainActor.run {
                     self.lastError = "Could not clear \(finding.title): \(error.localizedDescription)"
-                    self.inFlight.remove(finding.path)
+                    self.endReclaim(for: finding)
                 }
             }
         }
