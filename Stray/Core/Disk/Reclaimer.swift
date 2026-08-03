@@ -7,6 +7,24 @@ enum ReclaimError: Error, Equatable {
     case commandFailed(Int32)
 }
 
+extension ReclaimError: LocalizedError {
+    /// Human-readable text for `ScanEngine.lastError`, which renders this directly in
+    /// the panel — without this, a failure would show the raw enum case (e.g.
+    /// `commandFailed(-1)`) instead of an English sentence.
+    var errorDescription: String? {
+        switch self {
+        case .isHome:
+            return "Refused to remove the home directory itself."
+        case .outsideHome:
+            return "Refused to remove a path outside the home directory."
+        case .isScanRoot:
+            return "Refused to remove a directory that contains a protected scan root."
+        case .commandFailed(let status):
+            return "The command failed (exit code \(status))."
+        }
+    }
+}
+
 /// The only code in the app allowed to delete anything on disk.
 /// Every public action that takes a path routes through `assertSafe` first; `emptyTrash`
 /// takes no path and delegates to Finder.

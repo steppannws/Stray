@@ -25,8 +25,15 @@ struct Finding: Identifiable, Hashable {
     var extraPIDs: [pid_t] = [] // sibling instances killed in the same batch
     let path: String         // binary or plist
     let startedAt: Date?
-    var bytes: Int64?           // nil while sizing is in flight
+    var bytes: Int64?           // nil while sizing is in flight, or when the reclaim
+                                 // method (e.g. simctl) can't promise a definite size
     var isActiveProject = false // project files touched in the last 7 days
+    /// The exact paths a reclaim of this finding will remove. `bytes`, once non-nil, is
+    /// always the sum of sizing these paths and no others — the invariant that keeps a
+    /// row from ever understating what its confirm button actually deletes. Empty for
+    /// process/launchd findings and for disk findings whose reclaim method (simctl,
+    /// docker) doesn't operate on fixed paths at all.
+    var reclaimPaths: [URL] = []
 
     var uptimeDescription: String {
         guard let startedAt else { return "—" }

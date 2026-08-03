@@ -7,6 +7,15 @@ import Foundation
     #expect(Set(ids).count == ids.count)
 }
 
+@Test func catalogNamesAreUnique() {
+    // `ScanEngine.resolveCache` joins a `Finding` back to its `CacheEntry` by `name`
+    // (see the comment there for why) rather than a dedicated key. A duplicate name
+    // would make that join silently pick the wrong entry — and therefore reclaim the
+    // wrong cache — so this enforces the invariant the join key relies on.
+    let names = CacheCatalog.all.map(\.name)
+    #expect(Set(names).count == names.count)
+}
+
 @Test func catalogEntriesAreWellFormed() {
     for entry in CacheCatalog.all {
         #expect(!entry.id.isEmpty)
