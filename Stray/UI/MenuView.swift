@@ -14,12 +14,14 @@ struct MenuView: View {
             // ScrollView.
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    sectionLabel("Processes")
                     if engine.findings.isEmpty {
                         emptyState
                     } else {
                         findingsList
                     }
                     Divider()
+                    sectionLabel("Disk")
                     diskRows
                 }
             }
@@ -73,12 +75,27 @@ struct MenuView: View {
         }
     }
 
+    /// A lightweight in-flow heading marking where a section's rows begin inside the
+    /// shared `ScrollView` (see `body`). Deliberately heavier in weight than the "Disk"
+    /// label in the pinned `diskHeader` bar below, so the two never look like the same
+    /// kind of element: this one is the section heading; that one is a status/control bar.
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline).fontWeight(.semibold)
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+    }
+
     /// Pinned outside the ScrollView (see `body`) so "Scan disk" and the running
     /// "Reclaimable:" total are always visible without scrolling, even with a long
-    /// process list.
+    /// process list. This is a controls/status bar, not a section heading — the actual
+    /// "Disk" heading lives in-flow above `diskRows` (see `sectionLabel`), so this bar's
+    /// own "Disk" label is kept light-weight to avoid reading as a second, competing
+    /// heading right above the footer.
     private var diskHeader: some View {
         HStack {
-            Text("Disk").font(.subheadline).fontWeight(.medium)
+            Text("Disk").font(.caption).foregroundStyle(.secondary)
             Spacer()
             if engine.isDiskScanning {
                 ProgressView().controlSize(.small)
