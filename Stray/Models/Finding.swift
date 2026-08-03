@@ -34,6 +34,15 @@ struct Finding: Identifiable, Hashable {
     /// process/launchd findings and for disk findings whose reclaim method (simctl,
     /// docker) doesn't operate on fixed paths at all.
     var reclaimPaths: [URL] = []
+    /// Whether resolving this finding is reversible (moves to Trash) rather than
+    /// permanent (e.g. `simctl delete unavailable`, `docker image prune`). Drives the
+    /// action button's label in `MenuView` — a permanent action must never be labeled
+    /// "Trash", which promises recoverability it doesn't have. Defaults to `true` (the
+    /// common case: process/launchd findings and project junk are all trashed); disk
+    /// cache findings set this explicitly from `entry.reclaim == .trash` in
+    /// `ScanEngine.cacheFinding`. Kept as the trailing property so every existing call
+    /// site — none of which pass it — keeps compiling unchanged.
+    var isReversible = true
 
     var uptimeDescription: String {
         guard let startedAt else { return "—" }

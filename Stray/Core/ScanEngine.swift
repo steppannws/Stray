@@ -361,7 +361,8 @@ final class ScanEngine: ObservableObject {
             pid: nil,
             path: displayPath?.path ?? entry.id,
             startedAt: nil,
-            reclaimPaths: reclaimPaths
+            reclaimPaths: reclaimPaths,
+            isReversible: entry.reclaim == .trash
         )
     }
 
