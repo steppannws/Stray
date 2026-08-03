@@ -89,9 +89,12 @@ enum Reclaimer {
     /// data and are left alone, so this never goes through `trash`.
     ///
     /// Blocks for as long as `simctl` runs, routinely tens of seconds; call this off the
-    /// main actor.
+    /// main actor. Given a 300s timeout (rather than `run`'s 30s default) precisely
+    /// because "routinely tens of seconds" leaves little margin under 30s — a timeout
+    /// here SIGTERMs a command that may have been working and may have partially
+    /// completed, surfacing a false error.
     static func simctlDeleteUnavailable() throws {
-        try run("/usr/bin/xcrun", ["simctl", "delete", "unavailable"])
+        try run("/usr/bin/xcrun", ["simctl", "delete", "unavailable"], timeout: 300)
     }
 
     /// Dangling (untagged) images only. Never `system prune -a`, which also removes
@@ -123,17 +126,24 @@ enum Reclaimer {
     /// Goes through `osascript` rather than `NSAppleScript` directly: `NSAppleScript` is
     /// main-thread-affine, which conflicts with this method's off-main-actor contract (and
     /// its caller, `ScanEngine`, is itself `@MainActor`, so an in-process call would block
-    /// the UI instead). `osascript` also inherits `run`'s bounded 30-second wait and status
+    /// the UI instead). `osascript` also inherits `run`'s bounded wait and status
     /// propagation, whereas `executeAndReturnError` has no timeout of its own and defaults
     /// to the ~2 minute Apple Event timeout.
     ///
-    /// Blocks for as long as `osascript` runs (bounded to 30s by `run`); call this off the
-    /// main actor.
+    /// Blocks for as long as `osascript` runs, bounded to 300s (rather than `run`'s 30s
+    /// default) because this call can legitimately sit blocked for a long time with no
+    /// error: `osascript` blocks while Finder's confirmation dialog is up (a default
+    /// macOS setting) or while a large Trash empties, and a timeout here SIGTERMs the
+    /// command and surfaces a false error for an operation that may have been working and
+    /// may have partially completed. Call this off the main actor.
     static func emptyTrash() throws {
-        try run("/usr/bin/osascript", ["-e", "tell application \"Finder\" to empty trash"])
+        try run("/usr/bin/osascript", ["-e", "tell application \"Finder\" to empty trash"], timeout: 300)
     }
 
-    private static func run(_ launchPath: String, _ arguments: [String]) throws {
+    /// `timeout` defaults to 30s for short-lived commands; callers whose underlying
+    /// command can legitimately run much longer (`simctlDeleteUnavailable`, `emptyTrash`)
+    /// pass a longer bound explicitly rather than eating a false timeout error.
+    private static func run(_ launchPath: String, _ arguments: [String], timeout: TimeInterval = 30) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -150,7 +160,7 @@ enum Reclaimer {
             throw ReclaimError.commandFailed(-1)
         }
 
-        if exited.wait(timeout: .now() + 30) == .timedOut {
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             throw ReclaimError.commandFailed(-1)
         }
