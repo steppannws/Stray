@@ -5,6 +5,10 @@ enum ReclaimError: Error, Equatable {
     case outsideHome
     case isScanRoot
     case commandFailed(Int32)
+    /// One or more Trash entries could not be removed (permissions, locked/uchg files,
+    /// missing Full Disk Access, ...). The associated value is how many entries failed;
+    /// every other entry was still removed.
+    case itemsNotRemoved(Int)
 }
 
 /// The only code in the app allowed to delete anything on disk.
@@ -59,6 +63,8 @@ enum Reclaimer {
     }
 
     /// Move to Trash. Reversible until the Trash is emptied.
+    ///
+    /// Blocks on Foundation's file-coordination machinery; call this off the main actor.
     static func trash(_ url: URL, scanRoots: [URL]) throws {
         try assertSafe(url, scanRoots: scanRoots)
         try FileManager.default.trashItem(at: url, resultingItemURL: nil)
@@ -66,12 +72,17 @@ enum Reclaimer {
 
     /// Removes simulator runtimes with no matching Xcode. Configured devices are user
     /// data and are left alone, so this never goes through `trash`.
+    ///
+    /// Blocks for as long as `simctl` runs, routinely tens of seconds; call this off the
+    /// main actor.
     static func simctlDeleteUnavailable() throws {
         try run("/usr/bin/xcrun", ["simctl", "delete", "unavailable"])
     }
 
     /// Dangling (untagged) images only. Never `system prune -a`, which also removes
     /// named volumes.
+    ///
+    /// Blocks for as long as `docker` runs; call this off the main actor.
     static func dockerImagePrune() throws {
         let docker = ["/opt/homebrew/bin/docker", "/usr/local/bin/docker"]
             .first { FileManager.default.isExecutableFile(atPath: $0) }
@@ -79,6 +90,7 @@ enum Reclaimer {
         try run(docker, ["image", "prune", "-f"])
     }
 
+    /// Walks the entire Trash synchronously; call this off the main actor.
     static func trashSize() -> Int64 {
         let trash = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".Trash")
@@ -86,11 +98,31 @@ enum Reclaimer {
         return SizeProbe.size(of: trash)
     }
 
+    /// Permanently deletes every entry in the Trash. Each entry is validated with
+    /// `assertSafe` before removal, so a relocated (symlinked) Trash can never cause a
+    /// deletion outside home. A stuck entry (permissions, a locked/uchg file, missing Full
+    /// Disk Access, ...) does not abort the rest: every other entry is still removed, and
+    /// the number of failures is reported via `ReclaimError.itemsNotRemoved`.
+    ///
+    /// Walks and deletes the whole Trash synchronously; call this off the main actor.
     static func emptyTrash() throws {
         let fm = FileManager.default
         let trash = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        for entry in (try? fm.contentsOfDirectory(atPath: trash.path)) ?? [] {
-            try? fm.removeItem(at: trash.appendingPathComponent(entry))
+        let entries = (try? fm.contentsOfDirectory(atPath: trash.path)) ?? []
+
+        var failures = 0
+        for entry in entries {
+            let entryURL = trash.appendingPathComponent(entry)
+            do {
+                try assertSafe(entryURL, scanRoots: [])
+                try fm.removeItem(at: entryURL)
+            } catch {
+                failures += 1
+            }
+        }
+
+        guard failures == 0 else {
+            throw ReclaimError.itemsNotRemoved(failures)
         }
     }
 
@@ -100,8 +132,22 @@ enum Reclaimer {
         process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        process.standardInput = FileHandle.nullDevice
+
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            throw ReclaimError.commandFailed(-1)
+        }
+
+        if exited.wait(timeout: .now() + 30) == .timedOut {
+            process.terminate()
+            throw ReclaimError.commandFailed(-1)
+        }
+
         guard process.terminationStatus == 0 else {
             throw ReclaimError.commandFailed(process.terminationStatus)
         }
