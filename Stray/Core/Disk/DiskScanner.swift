@@ -18,7 +18,9 @@ enum DiskScanner {
     static let rules: [MatchRule] = [
         MatchRule(name: "node_modules", requiredSiblings: []),
         MatchRule(name: ".next", requiredSiblings: []),
-        MatchRule(name: ".venv", requiredSiblings: []),
+        MatchRule(name: ".venv", requiredSiblings: [
+            "requirements.txt", "pyproject.toml", "Pipfile", "poetry.lock", "setup.py", "environment.yml"
+        ]),
         MatchRule(name: "__pycache__", requiredSiblings: []),
         MatchRule(name: "Pods", requiredSiblings: ["Podfile"]),
         MatchRule(name: "build", requiredSiblings: ["build.gradle", "build.gradle.kts", "CMakeLists.txt"]),

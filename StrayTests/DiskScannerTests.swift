@@ -6,10 +6,23 @@ import Foundation
     #expect(DiskScanner.isMatch(name: "node_modules", siblings: []))
 }
 
-@Test func nextAndVenvMatchWithoutMarker() {
+@Test func nextAndPycacheMatchWithoutMarker() {
     #expect(DiskScanner.isMatch(name: ".next", siblings: []))
-    #expect(DiskScanner.isMatch(name: ".venv", siblings: []))
     #expect(DiskScanner.isMatch(name: "__pycache__", siblings: []))
+}
+
+@Test func venvRequiresAPythonManifest() {
+    // Unlike `.next`/`__pycache__`, the name alone doesn't prove regenerability: a
+    // `.venv` with no manifest means nobody recorded what was installed, so deleting it
+    // is not a rebuild — the same category as `~/.pyenv`, which the catalog excludes.
+    #expect(DiskScanner.isMatch(name: ".venv", siblings: ["requirements.txt"]))
+    #expect(DiskScanner.isMatch(name: ".venv", siblings: ["pyproject.toml"]))
+    #expect(DiskScanner.isMatch(name: ".venv", siblings: ["Pipfile"]))
+    #expect(DiskScanner.isMatch(name: ".venv", siblings: ["poetry.lock"]))
+    #expect(DiskScanner.isMatch(name: ".venv", siblings: ["setup.py"]))
+    #expect(DiskScanner.isMatch(name: ".venv", siblings: ["environment.yml"]))
+    #expect(!DiskScanner.isMatch(name: ".venv", siblings: []))
+    #expect(!DiskScanner.isMatch(name: ".venv", siblings: ["README.md"]))
 }
 
 @Test func podsRequiresPodfile() {
@@ -100,4 +113,27 @@ import Foundation
     let hits = Set(DiskScanner.scan(roots: [root]).map(\.standardizedFileURL.path))
 
     #expect(hits == Set([nestedNodeModules.standardizedFileURL.path]))
+}
+
+@Test func scanSkipsASymlinkedNodeModules() throws {
+    // The walk's symlink guard is currently inherited from `FileManager`'s enumerator
+    // default rather than independently enforced (see the comment in `walk`). This
+    // exercises it end to end: a `node_modules` that is actually a symlink to a real
+    // directory must never be returned, since the output feeds `reclaimPaths` directly.
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    let root = home.appendingPathComponent(".stray-scan-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+
+    let project = root.appendingPathComponent("proj")
+    let realTarget = root.appendingPathComponent("real-target")
+    try fm.createDirectory(at: project, withIntermediateDirectories: true)
+    try fm.createDirectory(at: realTarget, withIntermediateDirectories: true)
+
+    let symlink = project.appendingPathComponent("node_modules")
+    try fm.createSymbolicLink(at: symlink, withDestinationURL: realTarget)
+
+    let hits = DiskScanner.scan(roots: [root])
+
+    #expect(hits.isEmpty)
 }
