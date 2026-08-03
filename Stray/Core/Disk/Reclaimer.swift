@@ -8,7 +8,8 @@ enum ReclaimError: Error, Equatable {
 }
 
 /// The only code in the app allowed to delete anything on disk.
-/// Every public action routes through `assertSafe` first.
+/// Every public action that takes a path routes through `assertSafe` first; `emptyTrash`
+/// takes no path and delegates to Finder.
 enum Reclaimer {
 
     /// Rejects anything that is not a disposable path strictly inside the user's home:
@@ -92,20 +93,26 @@ enum Reclaimer {
     /// which this app deliberately does not request. Finder already holds that access, so
     /// delegating costs only a one-time Automation prompt instead of blanket disk access.
     /// Verified on this machine: `contentsOfDirectory` on `~/.Trash` fails with EPERM
-    /// (NSCocoaErrorDomain 257) for a process without FDA.
+    /// (NSCocoaErrorDomain 257) for a process without FDA. Sending this Apple event requires
+    /// the `com.apple.security.automation.apple-events` entitlement plus
+    /// `NSAppleEventsUsageDescription` under the hardened runtime this app builds with —
+    /// without both, the send is refused with `errAEEventNotPermitted` and no prompt is ever
+    /// shown.
     ///
     /// There is deliberately no `trashSize()` — reporting the Trash's size would require
     /// the FDA grant this design avoids.
     ///
-    /// Blocks on the AppleScript round-trip to Finder; call this off the main actor.
+    /// Goes through `osascript` rather than `NSAppleScript` directly: `NSAppleScript` is
+    /// main-thread-affine, which conflicts with this method's off-main-actor contract (and
+    /// its caller, `ScanEngine`, is itself `@MainActor`, so an in-process call would block
+    /// the UI instead). `osascript` also inherits `run`'s bounded 30-second wait and status
+    /// propagation, whereas `executeAndReturnError` has no timeout of its own and defaults
+    /// to the ~2 minute Apple Event timeout.
+    ///
+    /// Blocks for as long as `osascript` runs (bounded to 30s by `run`); call this off the
+    /// main actor.
     static func emptyTrash() throws {
-        let source = "tell application \"Finder\" to empty trash"
-        var error: NSDictionary?
-        guard let script = NSAppleScript(source: source) else {
-            throw ReclaimError.commandFailed(-1)
-        }
-        script.executeAndReturnError(&error)
-        if error != nil { throw ReclaimError.commandFailed(-2) }
+        try run("/usr/bin/osascript", ["-e", "tell application \"Finder\" to empty trash"])
     }
 
     private static func run(_ launchPath: String, _ arguments: [String]) throws {

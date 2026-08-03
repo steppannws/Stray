@@ -14,11 +14,13 @@ targets:
         CFBundleDisplayName: Stray
         LSUIElement: true # menu bar only, no Dock icon
         NSHumanReadableCopyright: ""
+        NSAppleEventsUsageDescription: "Stray asks Finder to empty the Trash on your behalf when you reclaim disk space."
     settings:
       base:
         SWIFT_VERSION: "5.10"
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Stray/Resources/Stray.entitlements
         # No App Sandbox on purpose: we need to list all of the user's processes
         ENABLE_APP_SANDBOX: false
   StrayTests:
