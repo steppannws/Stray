@@ -2,7 +2,7 @@ import SwiftUI
 
 struct MenuView: View {
     @EnvironmentObject var engine: ScanEngine
-    @State private var confirmingEmptyTrash = false
+    @State private var showEmptyTrashConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -154,22 +154,32 @@ struct MenuView: View {
             }
             Spacer()
             if !engine.diskFindings.isEmpty || engine.lastDiskScan != nil {
-                // Same two-step "Sure?" confirm as `FindingRow.actionButton`: this is the
-                // single most destructive, least reversible action in the app (it destroys
-                // the whole Trash, including items unrelated to Stray), sitting right below
-                // buttons the user has just been clicking — it must not fire on one click.
-                Button(confirmingEmptyTrash ? "Sure?" : "Empty Trash") {
-                    if confirmingEmptyTrash {
-                        engine.emptyTrash()
-                        confirmingEmptyTrash = false
-                    } else {
-                        confirmingEmptyTrash = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { confirmingEmptyTrash = false }
-                    }
+                // Unlike `FindingRow.actionButton`'s two-step "Sure?" inline confirm — which
+                // is appropriate for a single row because the result lands in the Trash and
+                // is recoverable — this action is global and permanent: it destroys the
+                // *entire* Trash, including items Stray never touched and the user put there
+                // for unrelated reasons. A same-label, two-click inline confirm is exactly
+                // the shape an automation/accessibility harness reads as "the click didn't
+                // land" and retries, and the retry fires the destructive action. A modal
+                // `.confirmationDialog` forces an explicit, distinctly-labelled choice
+                // instead.
+                Button("Empty Trash") {
+                    showEmptyTrashConfirmation = true
                 }
                 .buttonStyle(.borderless).font(.caption2)
-                .tint(confirmingEmptyTrash ? .red : nil)
                 .help("Asks Finder to empty the Trash. macOS will prompt once to allow Stray to control Finder.")
+                .confirmationDialog(
+                    "Empty the Trash?",
+                    isPresented: $showEmptyTrashConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Empty Trash", role: .destructive) {
+                        engine.emptyTrash()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This permanently deletes everything currently in the Trash, not just what Stray found. This cannot be undone.")
+                }
             }
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless).font(.caption)

@@ -87,10 +87,19 @@ enum DiskScanner {
             }
             guard known else { continue }
 
+            // A name that matches a rule is never walked into, whether or not it passes
+            // the rule's sibling gate. A directory called `node_modules`, `.venv`, `Pods`,
+            // `build` or `target` is not a place this scanner looks for further findings:
+            // either the whole thing is reclaimable (gate passes) or it must be left alone
+            // entirely (gate fails). Descending into a gate-failed match — e.g. a
+            // manifest-less `.venv` — would surface its internals (nested `node_modules`,
+            // `__pycache__`) as independently "reclaimable", which re-creates exactly the
+            // harm the sibling gate exists to prevent, just one level deeper.
+            enumerator.skipDescendants()
+
             let siblings = Set((try? fm.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? [])
             if isMatch(name: name, siblings: siblings) {
                 hits.append(url)
-                enumerator.skipDescendants()
             }
         }
         return hits

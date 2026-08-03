@@ -115,6 +115,30 @@ import Foundation
     #expect(hits == Set([nestedNodeModules.standardizedFileURL.path]))
 }
 
+@Test func scanPrunesAManifestLessVenvInsteadOfWalkingInto() throws {
+    // A `.venv` with no Python manifest fails `isMatch`'s sibling gate, so it is not
+    // itself a finding — but that must not turn it into an open door. Before the walk
+    // pruned on a rule-name match regardless of gate outcome, the enumerator descended
+    // into a gate-failed `.venv` and reported its interior (`node_modules`, `__pycache__`)
+    // as independent findings — exactly the harm the manifest gate exists to prevent,
+    // reachable one level deeper. This must yield nothing at all.
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    let root = home.appendingPathComponent(".stray-scan-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+
+    let venv = root.appendingPathComponent("proj/.venv")
+    try fm.createDirectory(at: venv.appendingPathComponent("lib/python3.12/site-packages/somepkg/node_modules"),
+                           withIntermediateDirectories: true)
+    try fm.createDirectory(at: venv.appendingPathComponent("lib/python3.12/site-packages/otherpkg/__pycache__"),
+                           withIntermediateDirectories: true)
+    // Deliberately no requirements.txt / pyproject.toml / etc. next to .venv.
+
+    let hits = DiskScanner.scan(roots: [root])
+
+    #expect(hits.isEmpty)
+}
+
 @Test func scanSkipsASymlinkedNodeModules() throws {
     // The walk's symlink guard is currently inherited from `FileManager`'s enumerator
     // default rather than independently enforced (see the comment in `walk`). This
