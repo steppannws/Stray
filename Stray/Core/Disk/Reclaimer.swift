@@ -4,6 +4,7 @@ enum ReclaimError: Error, Equatable {
     case isHome
     case outsideHome
     case isScanRoot
+    case commandFailed(Int32)
 }
 
 /// The only code in the app allowed to delete anything on disk.
@@ -55,5 +56,54 @@ enum Reclaimer {
             resolved.appendPathComponent(component)
         }
         return resolved.standardizedFileURL
+    }
+
+    /// Move to Trash. Reversible until the Trash is emptied.
+    static func trash(_ url: URL, scanRoots: [URL]) throws {
+        try assertSafe(url, scanRoots: scanRoots)
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    }
+
+    /// Removes simulator runtimes with no matching Xcode. Configured devices are user
+    /// data and are left alone, so this never goes through `trash`.
+    static func simctlDeleteUnavailable() throws {
+        try run("/usr/bin/xcrun", ["simctl", "delete", "unavailable"])
+    }
+
+    /// Dangling (untagged) images only. Never `system prune -a`, which also removes
+    /// named volumes.
+    static func dockerImagePrune() throws {
+        let docker = ["/opt/homebrew/bin/docker", "/usr/local/bin/docker"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        guard let docker else { throw ReclaimError.commandFailed(-1) }
+        try run(docker, ["image", "prune", "-f"])
+    }
+
+    static func trashSize() -> Int64 {
+        let trash = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash")
+        guard FileManager.default.fileExists(atPath: trash.path) else { return 0 }
+        return SizeProbe.size(of: trash)
+    }
+
+    static func emptyTrash() throws {
+        let fm = FileManager.default
+        let trash = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        for entry in (try? fm.contentsOfDirectory(atPath: trash.path)) ?? [] {
+            try? fm.removeItem(at: trash.appendingPathComponent(entry))
+        }
+    }
+
+    private static func run(_ launchPath: String, _ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw ReclaimError.commandFailed(process.terminationStatus)
+        }
     }
 }
