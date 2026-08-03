@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuView: View {
     @EnvironmentObject var engine: ScanEngine
+    @State private var confirmingEmptyTrash = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -93,6 +94,10 @@ struct MenuView: View {
     /// "Disk" heading lives in-flow above `diskRows` (see `sectionLabel`), so this bar's
     /// own "Disk" label is kept light-weight to avoid reading as a second, competing
     /// heading right above the footer.
+    ///
+    /// "Scan disk" always renders (merely disabled while a scan is in flight) rather than
+    /// being replaced by the "Reclaimable:" total once findings exist — otherwise there is
+    /// no way to rescan for the rest of the session and the list goes stale.
     private var diskHeader: some View {
         HStack {
             Text("Disk").font(.caption).foregroundStyle(.secondary)
@@ -100,14 +105,13 @@ struct MenuView: View {
             if engine.isDiskScanning {
                 ProgressView().controlSize(.small)
             }
-            if engine.diskFindings.isEmpty {
-                Button("Scan disk") { engine.scanDisk() }
-                    .buttonStyle(.borderless).font(.caption)
-                    .disabled(engine.isDiskScanning)
-            } else {
+            if !engine.diskFindings.isEmpty {
                 Text("Reclaimable: \(ByteCountFormatter.string(fromByteCount: engine.reclaimableBytes, countStyle: .file))")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Button("Scan disk") { engine.scanDisk() }
+                .buttonStyle(.borderless).font(.caption)
+                .disabled(engine.isDiskScanning)
         }
         .padding(10)
     }
@@ -150,9 +154,22 @@ struct MenuView: View {
             }
             Spacer()
             if !engine.diskFindings.isEmpty || engine.lastDiskScan != nil {
-                Button("Empty Trash") { engine.emptyTrash() }
-                    .buttonStyle(.borderless).font(.caption2)
-                    .help("Asks Finder to empty the Trash. macOS will prompt once to allow Stray to control Finder.")
+                // Same two-step "Sure?" confirm as `FindingRow.actionButton`: this is the
+                // single most destructive, least reversible action in the app (it destroys
+                // the whole Trash, including items unrelated to Stray), sitting right below
+                // buttons the user has just been clicking — it must not fire on one click.
+                Button(confirmingEmptyTrash ? "Sure?" : "Empty Trash") {
+                    if confirmingEmptyTrash {
+                        engine.emptyTrash()
+                        confirmingEmptyTrash = false
+                    } else {
+                        confirmingEmptyTrash = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { confirmingEmptyTrash = false }
+                    }
+                }
+                .buttonStyle(.borderless).font(.caption2)
+                .tint(confirmingEmptyTrash ? .red : nil)
+                .help("Asks Finder to empty the Trash. macOS will prompt once to allow Stray to control Finder.")
             }
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless).font(.caption)
@@ -179,7 +196,12 @@ struct FindingRow: View {
                 }
                 Text(finding.detail)
                     .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    // Tool-cache rows use `detail` as the only place the UI states what a
+                    // deletion costs (`CacheCatalog.regeneratedBy`) — for the entries with
+                    // real cost, that warning sits in the tail and must not be truncated.
+                    // `.help` still surfaces the full text on hover for the 2-line kinds.
+                    .lineLimit(finding.kind == .toolCache ? nil : 2)
+                    .help(finding.detail)
                 HStack(spacing: 6) {
                     if finding.bytes != nil || finding.kind == .projectJunk || finding.kind == .toolCache {
                         Text(finding.sizeDescription)
@@ -229,7 +251,10 @@ struct FindingRow: View {
         switch finding.kind {
         case .orphanLaunchd: return "Clean"
         case .duplicate: return "Kill \(finding.extraPIDs.count + 1)"
-        case .projectJunk, .toolCache: return "Trash"
+        // Derived from the reclaim method, not the kind: `xcode.simulators` (simctl) and
+        // `docker.dangling` (docker image prune) are both `.toolCache` but permanent —
+        // labeling them "Trash" would falsely promise recoverability.
+        case .projectJunk, .toolCache: return finding.isReversible ? "Trash" : "Clean"
         default: return "Kill"
         }
     }
