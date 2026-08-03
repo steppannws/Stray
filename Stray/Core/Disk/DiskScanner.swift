@@ -45,15 +45,24 @@ enum DiskScanner {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
             options: [.skipsPackageDescendants],
             errorHandler: { _, _ in true }
         ) else { return [] }
 
         var hits: [URL] = []
         for case let url as URL in enumerator {
-            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-            else { continue }
+            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+
+            // Never follow symlinked directories: this walk feeds disk-reclaim actions
+            // directly, and the app-wide rule is to never follow symlinks when sizing or
+            // deleting. `FileManager`'s enumerator already reports a symlink as a
+            // non-directory and does not descend into it, so this was already the
+            // observable behavior — this check just makes the invariant explicit instead
+            // of leaning on that default.
+            if resourceValues?.isSymbolicLink == true { continue }
+
+            guard resourceValues?.isDirectory == true else { continue }
 
             let name = url.lastPathComponent
             let isTopLevel = url.deletingLastPathComponent().standardizedFileURL.path

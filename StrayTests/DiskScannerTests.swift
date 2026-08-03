@@ -53,3 +53,51 @@ import Foundation
     #expect(hits.count == 1)
     #expect(hits.first?.lastPathComponent == "node_modules")
 }
+
+@Test func scanFindsDotPrefixedAndMarkerGatedMatches() throws {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    let root = home.appendingPathComponent(".stray-scan-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+
+    let project = root.appendingPathComponent("proj")
+    try fm.createDirectory(at: project.appendingPathComponent(".next"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: project.appendingPathComponent("Pods"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: project.appendingPathComponent("build"), withIntermediateDirectories: true)
+    fm.createFile(atPath: project.appendingPathComponent("Podfile").path, contents: nil)
+    fm.createFile(atPath: project.appendingPathComponent("build.gradle").path, contents: nil)
+
+    let hits = Set(DiskScanner.scan(roots: [root]).map(\.standardizedFileURL.path))
+
+    // `.next` proves the dot-skip guard lets a known dot-prefixed name through walk().
+    // `Pods` and `build` prove siblings are read from the target's own parent directory
+    // (not the target directory's own contents), so marker-gated matching actually works
+    // end to end rather than only in the pure `isMatch` check.
+    #expect(hits == Set([
+        project.appendingPathComponent(".next").standardizedFileURL.path,
+        project.appendingPathComponent("Pods").standardizedFileURL.path,
+        project.appendingPathComponent("build").standardizedFileURL.path,
+    ]))
+}
+
+@Test func scanPrunesTopLevelLibraryButWalksNestedLibrary() throws {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    let root = home.appendingPathComponent(".stray-scan-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+
+    // Top-level Library (a direct child of the scan root) must be pruned entirely —
+    // its node_modules must never be reported, proving the exclusion skips descendants
+    // rather than merely skipping the Library directory node itself.
+    try fm.createDirectory(at: root.appendingPathComponent("Library/node_modules"),
+                           withIntermediateDirectories: true)
+
+    // A Library directory nested inside a project is not a direct child of the scan
+    // root, so it must NOT be pruned — proving the exclusion is top-level-only.
+    let nestedNodeModules = root.appendingPathComponent("proj/Library/node_modules")
+    try fm.createDirectory(at: nestedNodeModules, withIntermediateDirectories: true)
+
+    let hits = Set(DiskScanner.scan(roots: [root]).map(\.standardizedFileURL.path))
+
+    #expect(hits == Set([nestedNodeModules.standardizedFileURL.path]))
+}
