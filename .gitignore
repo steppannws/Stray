@@ -1,0 +1,5 @@
+build/
+Stray.xcodeproj/
+.superpowers/
+.DS_Store
+xcuserdata/

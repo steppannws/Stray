@@ -1,0 +1,23 @@
+name: Stray
+options:
+  bundleIdPrefix: com.stepan
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  Stray:
+    type: application
+    platform: macOS
+    sources: [Stray]
+    info:
+      path: Stray/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Stray
+        LSUIElement: true # menu bar only, no Dock icon
+        NSHumanReadableCopyright: ""
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        ENABLE_HARDENED_RUNTIME: true
+        CODE_SIGN_STYLE: Automatic
+        # No App Sandbox on purpose: we need to list all of the user's processes
+        ENABLE_APP_SANDBOX: false
