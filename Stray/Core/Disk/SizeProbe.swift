@@ -13,10 +13,16 @@ enum SizeProbe {
 
     static func size(of url: URL) -> Int64 {
         let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+        // No `.skipsPackageDescendants`: this probe totals bytes for something about to
+        // be deleted, so bundles (`.app`, `.framework`, `.xcarchive`) must be walked in
+        // full — skipping their contents would undercount `xcode.archives` and
+        // `xcode.derived-data` catalog entries to near zero. `DiskScanner` uses that
+        // option deliberately (to avoid false-positive matches inside bundles), but the
+        // same option is wrong here.
         guard let enumerator = FileManager.default.enumerator(
             at: url,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsPackageDescendants],
+            options: [],
             errorHandler: { _, _ in true }
         ) else { return 0 }
 
