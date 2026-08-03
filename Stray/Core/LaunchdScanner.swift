@@ -47,6 +47,10 @@ enum LaunchdScanner {
         p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         p.arguments = ["bootout", "gui/\(getuid())/\(label)"]
         try? p.run(); p.waitUntilExit() // may fail if it was never loaded; fine
-        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        // Routed through `Reclaimer`, not `FileManager.trashItem` directly: `Reclaimer` is
+        // documented as "the only code in the app allowed to delete anything on disk" —
+        // this URL is always a .plist enumerated from ~/Library/LaunchAgents so `assertSafe`
+        // is not a live safety gate here, but bypassing it would falsify that claim.
+        try Reclaimer.trash(url, scanRoots: [])
     }
 }
