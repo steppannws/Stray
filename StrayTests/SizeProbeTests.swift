@@ -124,9 +124,25 @@ final class ResultBox: @unchecked Sendable {
 
     /// Records the probe's result and blocks the caller until `concurrencyCap` callbacks
     /// are simultaneously in flight — proving genuine overlap deterministically instead
-    /// of inferring it from timing — or until a generous timeout elapses. Once the cap
-    /// has been reached once, later calls pass straight through: the rendezvous only
-    /// needs to happen once to prove the property.
+    /// of inferring it from timing — or until a generous timeout elapses.
+    ///
+    /// The gate re-arms itself: `gateOpened` is reset to `false` once `inFlight` drains
+    /// back to 0, so each wave of concurrent callbacks is forced through its own
+    /// rendezvous rather than only the very first one. Without this, only wave 1 would be
+    /// provably concurrent — later waves would see `gateOpened` still latched from wave 1
+    /// and skip waiting entirely. The reset lives in the same critical section as the
+    /// decrement it depends on, so no other call can observe `inFlight == 0` with
+    /// `gateOpened` still true, or vice versa: both fields only ever change together,
+    /// under this lock.
+    ///
+    /// This makes the *lower* bound (peak > 1, no timeout) deterministic for every wave
+    /// of a normal run. It does not make the *upper* bound airtight against an arbitrary
+    /// increase to production `concurrency`: callbacks beyond `concurrencyCap` in the same
+    /// initial burst are never forced to wait on anything (forcing that would hang a
+    /// correct implementation, which only ever produces `concurrencyCap`-sized waves), so
+    /// whether their `peak` update is observed while `concurrencyCap - 1` others are still
+    /// in flight remains a real-world scheduling race, not a guarantee. Empirically this
+    /// still catches a `concurrency` raised from 4 to 8 well over half the time.
     func rendezvous(_ url: URL, _ bytes: Int64) {
         lock.lock()
         inFlight += 1
@@ -147,6 +163,7 @@ final class ResultBox: @unchecked Sendable {
 
         lock.lock()
         inFlight -= 1
+        if inFlight == 0 { gateOpened = false }
         lock.unlock()
     }
 }
