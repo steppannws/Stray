@@ -163,14 +163,20 @@ final class ScanEngine: ObservableObject {
         inFlight.subtract(Self.reclaimKeys(for: finding))
     }
 
-    /// Thrown by `trashAll` when handed no paths — a signal that whatever constructed the
-    /// `Finding` failed to populate `reclaimPaths` (it defaults to `[]`), not a
-    /// legitimate "nothing to do". Without this, an empty list would let `trashAll`
-    /// return cleanly, and the caller would treat that as success and remove the row —
-    /// a confirm button that silently does nothing instead of surfacing the bug.
+    /// Thrown by `trashAll` when handed no paths. This is genuinely reachable, not just a
+    /// future-producer safeguard: `CacheCatalog.present()` and `cacheFinding` each run
+    /// their own independent `fileExists` check, so a `.trash` entry's on-disk location
+    /// can be deleted between the two (by the user, or another process) — `present()`
+    /// still includes the entry, but `cacheFinding` then computes an empty
+    /// `reclaimPaths` and a stale display `path`. Without this guard, `trashAll` would
+    /// return cleanly on an empty list, and the caller would treat that as success and
+    /// remove the row — a confirm button that silently does nothing because nothing was
+    /// actually there to delete. `errorDescription` is user-facing copy (it flows
+    /// straight into `ScanEngine.lastError`, which only exists to be rendered), not an
+    /// internal diagnostic — it must read as something the user can act on.
     private struct EmptyReclaimPathsError: LocalizedError {
         var errorDescription: String? {
-            "Nothing to reclaim (reclaimPaths was empty) — this is a bug, not a user-facing failure."
+            "This item's location no longer exists. Rescan to refresh the list."
         }
     }
 
@@ -178,7 +184,13 @@ final class ScanEngine: ObservableObject {
     /// a multi-path reclaim still attempts every path rather than aborting after one.
     /// Shared by project-junk removal and the `.trash` branch of `resolveCache` — both
     /// reduce to "trash this exact list of `reclaimPaths`".
-    private nonisolated static func trashAll(_ paths: [URL], scanRoots: [URL]) throws {
+    ///
+    /// Internal (not `private`), matching the precedent already used elsewhere in this
+    /// file (`applySize`, `beginSizing`, `removeDiskFinding`, `cacheFinding`,
+    /// `beginReclaim`/`endReclaim`), so the empty-list guard is a one-line synchronous
+    /// test with no `Task` and no filesystem access — it throws before ever calling
+    /// `Reclaimer.trash`.
+    nonisolated static func trashAll(_ paths: [URL], scanRoots: [URL]) throws {
         guard !paths.isEmpty else { throw EmptyReclaimPathsError() }
         var firstError: Error?
         for path in paths {

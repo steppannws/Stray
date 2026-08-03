@@ -2,16 +2,30 @@ import Testing
 import Foundation
 @testable import Stray
 
-// `applySize`, `beginSizing`, `removeDiskFinding`, `beginReclaim`/`endReclaim`, and
-// `cacheFinding` are `internal` rather than `private` specifically to make this file
-// possible: none of them need the filesystem or a real disk scan (in particular,
-// `beginReclaim`/`endReclaim` let the in-flight guard be tested without invoking a real
-// Reclaimer call), so there is no reason to defer their correctness to manual QA of the
-// "just wiring" that calls them.
+// `applySize`, `beginSizing`, `removeDiskFinding`, `beginReclaim`/`endReclaim`,
+// `trashAll`, and `cacheFinding` are `internal` rather than `private` specifically to
+// make this file possible: none of them need the filesystem or a real disk scan (in
+// particular, `beginReclaim`/`endReclaim` let the in-flight guard be tested without
+// invoking a real Reclaimer call, and `trashAll`'s empty-list guard is testable
+// synchronously with no `Task` since it throws before ever calling `Reclaimer.trash`),
+// so there is no reason to defer their correctness to manual QA of the "just wiring"
+// that calls them.
 //
 // `ScanEngine(startTimer: false)` is used throughout instead of the production
 // `ScanEngine()` so these tests don't each start a live process scan and leave an
 // un-invalidated 5-minute repeating `Timer` running past the test's lifetime.
+
+// MARK: - trashAll
+
+@Test func trashAllThrowsOnAnEmptyPathList() {
+    // `reclaimPaths` defaults to `[]`; without this guard, `trashAll` would return
+    // cleanly on an empty list and the caller would treat that as a successful reclaim
+    // that deleted nothing. `(any Error).self` avoids needing to expose the (private)
+    // error type this throws.
+    #expect(throws: (any Error).self) {
+        try ScanEngine.trashAll([], scanRoots: [])
+    }
+}
 
 // MARK: - resolve(_:) / resolveCache
 
@@ -37,19 +51,27 @@ import Foundation
     // already replaced `diskFindings` with a fresh `Finding` for the same path but a new
     // id. The completing reclaim only ever knows the *original* value, so removal must
     // still find the (differently-UUID'd) row by path.
+    //
+    // Also seeds an unrelated row (`untouched`) and asserts it survives: with only one
+    // row seeded, `diskFindings.isEmpty` after removal is satisfied just as well by an
+    // over-broad `removeAll { true }`, so that assertion alone can't tell a correct
+    // matcher from one that deletes everything.
     let engine = ScanEngine(startTimer: false)
     let url = URL(fileURLWithPath: "/tmp/stray-test-\(UUID().uuidString)")
     let original = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
                             pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
-    engine.beginSizing(for: [original])
+    let untouchedURL = URL(fileURLWithPath: "/tmp/stray-test-untouched-\(UUID().uuidString)")
+    let untouched = Finding(kind: .projectJunk, severity: .info, title: "untouched", detail: "d",
+                             pid: nil, path: untouchedURL.path, startedAt: nil, reclaimPaths: [untouchedURL])
+    engine.beginSizing(for: [original, untouched])
 
     let rescanned = Finding(kind: .projectJunk, severity: .info, title: "t", detail: "d",
                              pid: nil, path: url.path, startedAt: nil, reclaimPaths: [url])
-    engine.beginSizing(for: [rescanned]) // simulates the rescan; `rescanned.id != original.id`
+    engine.beginSizing(for: [rescanned, untouched]) // simulates the rescan; `rescanned.id != original.id`
 
     engine.removeDiskFinding(original)
 
-    #expect(engine.diskFindings.isEmpty)
+    #expect(engine.diskFindings.map(\.id) == [untouched.id])
 }
 
 @MainActor
@@ -61,6 +83,11 @@ import Foundation
     // urlY — a *different* string from `original.path`, and a different id. Matching on
     // id-or-path alone (the round-1/2 fix) would miss this; matching when `reclaimPaths`
     // intersect must still find it.
+    //
+    // Also seeds an unrelated row (`untouched`, non-intersecting `reclaimPaths`) and
+    // asserts it survives — round 3's added `reclaimPaths`-intersection clause widened
+    // the matcher, which is exactly the kind of change an `isEmpty`-only assertion can't
+    // catch over-matching in.
     let engine = ScanEngine(startTimer: false)
     let urlX = URL(fileURLWithPath: "/tmp/stray-test-x-\(UUID().uuidString)")
     let urlY = URL(fileURLWithPath: "/tmp/stray-test-y-\(UUID().uuidString)")
@@ -68,11 +95,14 @@ import Foundation
                             pid: nil, path: urlX.path, startedAt: nil, reclaimPaths: [urlX, urlY])
     let reappeared = Finding(kind: .toolCache, severity: .info, title: "Yarn cache", detail: "d",
                               pid: nil, path: urlY.path, startedAt: nil, reclaimPaths: [urlY])
-    engine.beginSizing(for: [reappeared]) // simulates the rescan replacing diskFindings
+    let untouchedURL = URL(fileURLWithPath: "/tmp/stray-test-untouched-\(UUID().uuidString)")
+    let untouched = Finding(kind: .toolCache, severity: .info, title: "Untouched cache", detail: "d",
+                             pid: nil, path: untouchedURL.path, startedAt: nil, reclaimPaths: [untouchedURL])
+    engine.beginSizing(for: [reappeared, untouched]) // simulates the rescan replacing diskFindings
 
     engine.removeDiskFinding(original) // the completing reclaim only knows `original`
 
-    #expect(engine.diskFindings.isEmpty)
+    #expect(engine.diskFindings.map(\.id) == [untouched.id])
 }
 
 // MARK: - beginReclaim / endReclaim
