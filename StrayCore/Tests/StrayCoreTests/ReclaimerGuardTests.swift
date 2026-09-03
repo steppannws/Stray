@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Stray
+@testable import StrayCore
 
 private let home = FileManager.default.homeDirectoryForCurrentUser
 

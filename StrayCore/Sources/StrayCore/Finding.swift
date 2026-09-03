@@ -1,6 +1,6 @@
 import Foundation
 
-enum FindingKind: String, CaseIterable {
+public enum FindingKind: String, CaseIterable {
     case orphanMCP = "Orphan MCP"
     case orphanProcess = "Orphan process"
     case duplicate = "Duplicate"
@@ -10,30 +10,30 @@ enum FindingKind: String, CaseIterable {
     case toolCache = "Tool cache"
 }
 
-enum Severity: Int, Comparable {
+public enum Severity: Int, Comparable {
     case info = 0, warning = 1, strong = 2
-    static func < (lhs: Severity, rhs: Severity) -> Bool { lhs.rawValue < rhs.rawValue }
+    public static func < (lhs: Severity, rhs: Severity) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
-struct Finding: Identifiable, Hashable {
-    let id = UUID()
-    let kind: FindingKind
-    let severity: Severity
-    let title: String        // e.g. "context7-mcp"
-    let detail: String       // evidence: why we flagged it
-    let pid: pid_t?          // nil for launchd findings (files)
-    var extraPIDs: [pid_t] = [] // sibling instances killed in the same batch
-    let path: String         // binary or plist
-    let startedAt: Date?
-    var bytes: Int64?           // nil while sizing is in flight, or when the reclaim
+public struct Finding: Identifiable, Hashable {
+    public let id = UUID()
+    public let kind: FindingKind
+    public let severity: Severity
+    public let title: String        // e.g. "context7-mcp"
+    public let detail: String       // evidence: why we flagged it
+    public let pid: pid_t?          // nil for launchd findings (files)
+    public var extraPIDs: [pid_t] = [] // sibling instances killed in the same batch
+    public let path: String         // binary or plist
+    public let startedAt: Date?
+    public var bytes: Int64?           // nil while sizing is in flight, or when the reclaim
                                  // method (e.g. simctl) can't promise a definite size
-    var isActiveProject = false // project files touched in the last 7 days
+    public var isActiveProject = false // project files touched in the last 7 days
     /// The exact paths a reclaim of this finding will remove. `bytes`, once non-nil, is
     /// always the sum of sizing these paths and no others — the invariant that keeps a
     /// row from ever understating what its confirm button actually deletes. Empty for
     /// process/launchd findings and for disk findings whose reclaim method (simctl,
     /// docker) doesn't operate on fixed paths at all.
-    var reclaimPaths: [URL] = []
+    public var reclaimPaths: [URL] = []
     /// Whether resolving this finding is reversible (moves to Trash) rather than
     /// permanent (e.g. `simctl delete unavailable`, `docker image prune`). Drives the
     /// action button's label in `MenuView` — a permanent action must never be labeled
@@ -42,16 +42,16 @@ struct Finding: Identifiable, Hashable {
     /// cache findings set this explicitly from `entry.reclaim == .trash` in
     /// `ScanEngine.cacheFinding`. Kept as the trailing property so every existing call
     /// site — none of which pass it — keeps compiling unchanged.
-    var isReversible = true
+    public var isReversible = true
 
-    var uptimeDescription: String {
+    public var uptimeDescription: String {
         guard let startedAt else { return "—" }
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
         return f.localizedString(for: startedAt, relativeTo: Date())
     }
 
-    var sizeDescription: String {
+    public var sizeDescription: String {
         guard let bytes else { return "—" }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
@@ -62,7 +62,7 @@ struct Finding: Identifiable, Hashable {
     /// `SizeProbe` — `reclaimPaths` does that (empty `reclaimPaths` means nothing is ever
     /// sized, regardless of what `path`/`pathURL` hold). No production caller today; kept
     /// as a general-purpose accessor for future UI use (e.g. reveal-in-Finder).
-    var pathURL: URL? {
+    public var pathURL: URL? {
         path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
     }
 }

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Stray
+@testable import StrayCore
 
 @Test func catalogIDsAreUnique() {
     let ids = CacheCatalog.all.map(\.id)

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Stray
+@testable import StrayCore
 
 // `applySize`, `beginSizing`, `removeDiskFinding`, `beginReclaim`/`endReclaim`,
 // `trashAll`, and `cacheFinding` are `internal` rather than `private` specifically to

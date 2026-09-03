@@ -1,4 +1,5 @@
 import SwiftUI
+import StrayCore
 
 struct MenuView: View {
     @EnvironmentObject var engine: ScanEngine

@@ -2,22 +2,22 @@ import Foundation
 import Combine
 
 @MainActor
-final class ScanEngine: ObservableObject {
-    @Published var findings: [Finding] = []
-    @Published var lastScan: Date?
-    @Published var isScanning = false
+public final class ScanEngine: ObservableObject {
+    @Published public var findings: [Finding] = []
+    @Published public var lastScan: Date?
+    @Published public var isScanning = false
 
     // Disk scanning is manual-only and never touches the process-scan timer: disk walks
     // and sizing are I/O heavy, so they live in their own published lane.
-    @Published var diskFindings: [Finding] = []
-    @Published var isDiskScanning = false
-    @Published var lastDiskScan: Date?
+    @Published public var diskFindings: [Finding] = []
+    @Published public var isDiskScanning = false
+    @Published public var lastDiskScan: Date?
     /// Surfaces a failed reclaim (trash/simctl/docker/emptyTrash) to the UI. A failure
     /// must never look like a silent success, so this is set whenever a Reclaimer call
     /// throws instead of the error being swallowed.
-    @Published var lastError: String?
+    @Published public var lastError: String?
 
-    var reclaimableBytes: Int64 {
+    public var reclaimableBytes: Int64 {
         diskFindings.compactMap(\.bytes).reduce(0, +)
     }
 
@@ -67,7 +67,7 @@ final class ScanEngine: ObservableObject {
     /// a live process scan and a 5-minute repeating `Timer` as a side effect, neither of
     /// which a unit test exercising the disk lane wants or should leave running past the
     /// test's lifetime.
-    init(startTimer: Bool = true) {
+    public init(startTimer: Bool = true) {
         guard startTimer else { return }
         scan()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -75,7 +75,7 @@ final class ScanEngine: ObservableObject {
         }
     }
 
-    func scan() {
+    public func scan() {
         guard !isScanning else { return }
         isScanning = true
         Task.detached(priority: .utility) {
@@ -90,7 +90,7 @@ final class ScanEngine: ObservableObject {
         }
     }
 
-    func resolve(_ finding: Finding) {
+    public func resolve(_ finding: Finding) {
         switch finding.kind {
         case .orphanLaunchd:
             try? LaunchdScanner.remove(finding: finding)
@@ -230,7 +230,7 @@ final class ScanEngine: ObservableObject {
     }
 
     /// Manual only — disk walks are I/O heavy and never run on the process timer.
-    func scanDisk() {
+    public func scanDisk() {
         guard !isDiskScanning else { return }
         isDiskScanning = true
         lastError = nil
@@ -409,7 +409,7 @@ final class ScanEngine: ObservableObject {
 
     /// Delegates to Finder; see `Reclaimer.emptyTrash` for why. Runs off the main actor
     /// since `osascript` blocks for as long as Finder takes to empty the Trash.
-    func emptyTrash() {
+    public func emptyTrash() {
         guard !emptyingTrash else { return }
         emptyingTrash = true
         lastError = nil

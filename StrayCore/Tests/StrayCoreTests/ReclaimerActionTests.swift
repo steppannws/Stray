@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Stray
+@testable import StrayCore
 
 @Test func trashMovesFileOutOfPlace() throws {
     let fm = FileManager.default
