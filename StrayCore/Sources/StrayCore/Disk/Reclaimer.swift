@@ -143,7 +143,16 @@ enum Reclaimer {
     /// `timeout` defaults to 30s for short-lived commands; callers whose underlying
     /// command can legitimately run much longer (`simctlDeleteUnavailable`, `emptyTrash`)
     /// pass a longer bound explicitly rather than eating a false timeout error.
-    private static func run(_ launchPath: String, _ arguments: [String], timeout: TimeInterval = 30) throws {
+    /// How long a timed-out command gets to honour SIGTERM before it is
+    /// SIGKILLed. Short: by this point the command has already overrun its
+    /// full timeout, so it is not about to exit politely.
+    private static let terminationGrace: TimeInterval = 2
+
+    /// Internal rather than private so the timeout-escalation path can be
+    /// tested against a command that deliberately ignores SIGTERM. Reaching it
+    /// through `simctlDeleteUnavailable` or `emptyTrash` would mean actually
+    /// hanging one of those for 300s.
+    static func run(_ launchPath: String, _ arguments: [String], timeout: TimeInterval = 30) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -162,6 +171,25 @@ enum Reclaimer {
 
         if exited.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
+            // Escalate rather than assuming SIGTERM was honoured. Both callers
+            // run Apple tools that do honour it, so in practice the terminate
+            // above is enough - but this path is only reached when a command
+            // has already misbehaved by overrunning a 300s bound, which is
+            // exactly when that assumption is least safe. Without this, such a
+            // command keeps running after the error is surfaced and the row is
+            // gone from the UI: invisible, and still mutating the disk it was
+            // told to stop touching.
+            //
+            // Bounded so this can never become the hang it is guarding against;
+            // SIGKILL cannot be caught, so the wait after it always returns.
+            let deadline = Date().addingTimeInterval(terminationGrace)
+            while process.isRunning, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
             throw ReclaimError.commandFailed(-1)
         }
 
