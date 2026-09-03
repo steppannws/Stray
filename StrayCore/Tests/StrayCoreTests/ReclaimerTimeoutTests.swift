@@ -27,8 +27,15 @@ import Foundation
     defer { try? FileManager.default.removeItem(at: dir) }
 
     // Overruns its bound, so `run` times out and must clean up after itself.
+    //
+    // The timeout has to outlast `/bin/sh` reaching the `echo` that records the
+    // pid. A tight bound made this flaky (4 of 5 runs on a cold clone, where
+    // nothing is warm): `run` gave up before the stub had recorded anything, so
+    // the test had nothing to assert against and reported that rather than
+    // silently passing. 2s is far longer than shell startup and still far
+    // shorter than the stub's 300s sleep, so the timeout is still what fires.
     #expect(throws: ReclaimError.self) {
-        try Reclaimer.run(bin.path, [], timeout: 0.3)
+        try Reclaimer.run(bin.path, [], timeout: 2)
     }
 
     guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
