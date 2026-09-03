@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  # This work currently lives on a feature branch, so `push` alone would not
+  # fire; `pull_request` is what actually gates it until the branch merges.
   push:
     branches: [main]
   pull_request:
@@ -10,7 +12,12 @@ jobs:
     # The suite is headless (StrayCore is a plain SPM package with no app
     # host), but the code under test calls Darwin process APIs and
     # FileManager's trash/file-coordination machinery, so it needs macOS.
-    runs-on: macos-14
+    #
+    # macos-15 rather than macos-14: this package only needs macOS 14, but
+    # the macos-14 image is deprecated upstream and already being
+    # brownout-tested ahead of removal. Pinned rather than macos-latest so a
+    # runner rollover cannot silently change the OS under the suite.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
