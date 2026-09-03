@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # The suite is headless (StrayCore is a plain SPM package with no app
+    # host), but the code under test calls Darwin process APIs and
+    # FileManager's trash/file-coordination machinery, so it needs macOS.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Test StrayCore
+        working-directory: StrayCore
+        run: swift test
+
+      # The app target is UI-only now, but it still has to compile against
+      # StrayCore's public surface - the split means a breaking change there
+      # would otherwise only surface at release time.
+      - name: Build the app
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -scheme Stray -destination 'platform=macOS' build
