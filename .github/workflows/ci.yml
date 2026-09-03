@@ -8,6 +8,24 @@ on:
   pull_request:
 
 jobs:
+  # Runs first and on Linux because it is free and fast: a bad runner label or
+  # a malformed step would otherwise only surface after queueing for a macOS
+  # runner, and a wrong `runs-on` cannot be caught by the job it breaks.
+  # actionlint validates runner labels against the real list, checks step
+  # structure, and shellchecks every `run:` block.
+  #
+  # This exists because the runner label was wrong once already: macos-14
+  # could not supply this repo's toolchain and was deprecated upstream, and
+  # nothing in the workflow or the local test runs could tell.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
   test:
     # The suite is headless (StrayCore is a plain SPM package with no app
     # host), but the code under test calls Darwin process APIs and
