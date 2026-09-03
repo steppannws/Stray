@@ -54,6 +54,12 @@ import Foundation
     #expect(SizeProbe.size(of: root) >= 50000)
 }
 
+/// How many times `sizesRunConcurrentlyUpToTheCap` may retry its rendezvous before
+/// reporting failure. Only reached when the gate keeps timing out, which for correct
+/// code means the machine is badly starved; a genuinely sequential implementation
+/// burns all of them and still fails, which is the behaviour we want.
+private let attemptsBeforeFailing = 4
+
 @Test func sizesRunConcurrentlyUpToTheCap() async throws {
     let fm = FileManager.default
     let root = fm.homeDirectoryForCurrentUser
@@ -74,22 +80,63 @@ import Foundation
     // construction on a CPU-constrained machine: `Thread.sleep` blocks a cooperative-pool
     // worker instead of suspending it, and a small/busy pool may never let tasks overlap
     // within the sleep window even though `sizes(for:)` is behaving correctly), each
-    // callback blocks on a semaphore until `concurrencyCap` callbacks are simultaneously
-    // in flight. Reaching that rendezvous deterministically proves real overlap
-    // regardless of machine speed; a generous timeout turns "the cap is never reached at
-    // all" (e.g. a sequential implementation) into a test failure instead of a hang.
-    let box = ResultBox(concurrencyCap: 4)
-    await SizeProbe.sizes(for: dirs) { url, bytes in
-        box.rendezvous(url, bytes)
+    // callback blocks on a semaphore until callbacks pile up in flight, which creates
+    // real overlap rather than hoping to observe it.
+    //
+    // The gate opens at `rendezvousTarget`, deliberately 2 rather than the full
+    // `concurrencyCap`. Blocking a callback blocks a *cooperative-pool worker* (the gate
+    // is a semaphore, not an `await`), so requiring a simultaneous 4-way rendezvous
+    // requires the pool to hand out 4 workers at once. That is not something a correct
+    // implementation can guarantee: under CPU contention the pool throttles, the fourth
+    // task is never scheduled while the first three are parked, and the rendezvous times
+    // out even though `sizes(for:)` is behaving perfectly. That made this test fail
+    // reproducibly on a loaded machine — and CI runners are always loaded.
+    //
+    // So the gate proves the *lower* bound only: two callbacks genuinely overlapping is
+    // enough to rule out a sequential implementation, and needs just two workers. The
+    // upper bound is enforced separately by `peakInFlight`, which is observed rather than
+    // synchronized on and so costs no scheduling guarantee at all.
+    //
+    // Even a 2-way rendezvous is not guaranteed on a sufficiently starved machine, so a
+    // single attempt is retried rather than asserted on. This keeps the signal intact
+    // without depending on the scheduler: a *sequential* implementation can never open
+    // the gate, so it exhausts every attempt and still fails, while a correct one only
+    // has to win the race once. Attempts are therefore near-free in the passing case
+    // (the first almost always succeeds) and only cost their timeout when the code is
+    // genuinely broken.
+    var box = ResultBox(concurrencyCap: 4, rendezvousTarget: 2)
+    for attempt in 1...attemptsBeforeFailing {
+        box = ResultBox(concurrencyCap: 4, rendezvousTarget: 2)
+        await SizeProbe.sizes(for: dirs) { url, bytes in
+            box.rendezvous(url, bytes)
+        }
+        #expect(box.count == 12, "every input must report exactly once, on attempt \(attempt)")
+        // Proves the concurrency cap holds. This is the assertion that catches a
+        // production `concurrency` raised above 4; it is an observation, so it is only
+        // probabilistic, but it costs nothing and empirically fires often. Checked on
+        // every attempt, including ones abandoned for a gate timeout, since an
+        // over-wide pool is if anything easier to observe on a contended machine.
+        #expect(box.peakInFlight <= 4, "concurrency exceeded the cap on attempt \(attempt)")
+        if !box.timedOut { break }
+
+        // Space out retries. Attempts run back-to-back otherwise, and a machine starved
+        // enough to lose one rendezvous is still starved microseconds later, so the
+        // retries correlate and buy far less than their count suggests. Yielding here
+        // both lets the current contention spike pass and gives the dispatch pool time to
+        // notice its blocked workers and overcommit a wider one, which is the very
+        // condition the next attempt needs. `Task.sleep` suspends rather than blocking, so
+        // it does not itself hold the worker the retry is waiting for.
+        try? await Task.sleep(nanoseconds: UInt64(attempt) * 50_000_000)
     }
 
-    #expect(box.count == 12)
-    // Proves the four-way rendezvous was actually reached, not just inferred.
-    #expect(!box.timedOut)
-    // Proves the work is actually concurrent, not sequential.
+    // A clean run of the gate: two callbacks provably overlapped, so the work is
+    // concurrent rather than sequential. If every attempt timed out, `peakInFlight` is
+    // still checked below and will report the sequential case as `1`.
+    #expect(!box.timedOut, "no attempt managed to overlap two callbacks in \(attemptsBeforeFailing) tries")
+    // Proves the work is actually concurrent, not sequential: a sequential implementation
+    // can never get two callbacks in flight at once, so the gate never opens and peak
+    // stays at 1.
     #expect(box.peakInFlight > 1)
-    // Proves the concurrency cap holds.
-    #expect(box.peakInFlight <= 4)
 }
 
 /// Small thread-safe collector so the async callback can be asserted on.
@@ -101,10 +148,15 @@ final class ResultBox: @unchecked Sendable {
     private var gateOpened = false
     private var gateTimedOut = false
     private let gate = DispatchSemaphore(value: 0)
-    private let concurrencyCap: Int
+    /// Number of simultaneously-in-flight callbacks that opens the gate. Kept below
+    /// `concurrencyCap` so the test never depends on the cooperative pool granting a
+    /// specific number of workers at once; see the note at the call site.
+    private let rendezvousTarget: Int
 
-    init(concurrencyCap: Int) {
-        self.concurrencyCap = concurrencyCap
+    init(concurrencyCap: Int, rendezvousTarget: Int) {
+        self.rendezvousTarget = rendezvousTarget
+        precondition(rendezvousTarget >= 2, "a rendezvous of 1 would prove no overlap at all")
+        precondition(rendezvousTarget <= concurrencyCap, "a target above the cap can never be reached")
     }
 
     var count: Int {
@@ -148,18 +200,37 @@ final class ResultBox: @unchecked Sendable {
         inFlight += 1
         peak = max(peak, inFlight)
         results[url] = bytes
-        let opensGateNow = inFlight >= concurrencyCap && !gateOpened
+        let opensGateNow = inFlight >= rendezvousTarget && !gateOpened
         if opensGateNow { gateOpened = true }
         let alreadyOpen = gateOpened && !opensGateNow
         lock.unlock()
 
         if opensGateNow {
-            for _ in 0..<(concurrencyCap - 1) { gate.signal() }
+            for _ in 0..<(rendezvousTarget - 1) { gate.signal() }
         } else if !alreadyOpen {
-            if gate.wait(timeout: .now() + 3) == .timedOut {
+            // 1s rather than 3: the caller retries, so this bounds a single attempt, not
+            // the whole test. Overlap either happens within milliseconds or the pool is
+            // too starved to grant a second worker at all, in which case waiting longer
+            // just makes a broken implementation slower to report.
+            if gate.wait(timeout: .now() + 1) == .timedOut {
                 lock.lock(); gateTimedOut = true; lock.unlock()
             }
         }
+
+        // Brief dwell so `peak` can actually observe the width of the pool.
+        //
+        // The gate alone cannot do this: it releases at `rendezvousTarget` (2), so
+        // callbacks beyond the second are never held anywhere and typically enter and
+        // leave `inFlight` faster than any other callback overlaps them. Without this
+        // dwell a production `concurrency` raised from 4 to 8 goes completely unnoticed,
+        // because peak keeps reading 2.
+        //
+        // Unlike the classic sleep-based concurrency test, nothing about *correctness*
+        // rests on this sleep: the lower bound is proven by the gate above. A dwell too
+        // short to catch the real peak can only under-report, which weakens the cap
+        // assertion into a missed violation, never a false failure on correct code. That
+        // is the right direction to fail on a contended CI runner.
+        Thread.sleep(forTimeInterval: 0.02)
 
         lock.lock()
         inFlight -= 1
