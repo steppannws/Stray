@@ -21,44 +21,19 @@ public final class ScanEngine: ObservableObject {
         diskFindings.compactMap(\.bytes).reduce(0, +)
     }
 
-    /// Paths with a reclaim currently in flight, guarding against a double-confirm.
-    /// `FindingRow`'s confirm button stays rendered until the row is removed, and removal
-    /// only happens after the blocking Reclaimer call returns, so a second tap before
-    /// that would otherwise fire a second `Reclaimer.trash` on an already-trashed path.
-    ///
-    /// Keyed on the *set* of a finding's identity paths (see `reclaimKeys(for:)`), not
-    /// just its single display `path` or its `Finding.id`. A rescan replaces
-    /// `diskFindings` wholesale with fresh `Finding` values carrying new UUIDs, so an
-    /// id-keyed guard misses a reappeared row entirely. A single-`path`-keyed guard is
-    /// still not enough for a multi-path cache entry (e.g. Yarn, backed by two possible
-    /// locations): `cacheFinding` picks whichever of `reclaimPaths` exists first as the
-    /// *display* `path`, so a reclaim that trashes the first of two paths and then races
-    /// a rescan can see the row reappear with the *second* path as its new display
-    /// `path` — a guard keyed only on the display path would miss that it's the same
-    /// in-flight reclaim. Keying on the union of `reclaimPaths` and `path` closes that:
-    /// both the original and the reappeared row's identity sets share at least the paths
-    /// still being (or already) trashed.
-    private var inFlight: Set<String> = []
-    /// Same guard as `inFlight`, kept separate because emptying the Trash has no
+    /// Guards against a double-confirm while a reclaim is in flight. See `ReclaimGuard`
+    /// for why findings are keyed on their identity path set rather than on `id`.
+    private var reclaimGuard = ReclaimGuard()
+    /// Tracked separately from `reclaimGuard` because emptying the Trash has no
     /// corresponding `Finding` row to key off.
     private var emptyingTrash = false
 
-    /// Running totals while `scanDisk()`'s sizing pass is in flight, keyed by finding id.
-    /// A finding is only as "sized" (non-nil `bytes`) once every one of its
-    /// `reclaimPaths` has reported — summing partial results into `bytes` directly would
-    /// let a still-growing number look final and be confirmed before all of it is known,
-    /// understating what the reclaim is about to remove.
-    private var pendingSizeCounts: [Finding.ID: Int] = [:]
-    private var pendingSizeSums: [Finding.ID: Int64] = [:]
-    /// Bumped by every `beginSizing(for:)` call. Each `scanDisk()` pass captures the
-    /// generation current at its start and stamps it on every `applySize` callback it
-    /// schedules; `applySize` drops any callback whose generation doesn't match the
-    /// current one. Without this, a sizing pass from a *previous* scan that is still
-    /// draining its unstructured `Task { @MainActor }` callbacks when a new scan starts
-    /// could deliver a stale report against the new pass's rows — today's ordering is not
-    /// structurally guaranteed FIFO, so this closes that gap outright rather than relying
-    /// on task-scheduling behavior.
-    private(set) var sizingGeneration = 0
+    /// Running totals while `scanDisk()`'s sizing pass is in flight. See `SizeTally` for
+    /// the partial-sum and stale-generation rules it enforces.
+    private var sizeTally = SizeTally()
+
+    /// Exposed for tests, which stamp callbacks with the pass they belong to.
+    var sizingGeneration: Int { sizeTally.generation }
 
     private var timer: Timer?
     private let interval: TimeInterval = 300 // 5 min
@@ -132,35 +107,19 @@ public final class ScanEngine: ObservableObject {
         }
     }
 
-    /// A finding's identity for the purposes of the in-flight guard and
-    /// `removeDiskFinding`'s matching: the union of every path a reclaim of it will
-    /// actually touch (`reclaimPaths`) and its display `path`. For a single-path finding
-    /// (project junk, or a single-path cache entry) this is one element and behaves
-    /// exactly like matching on `path` alone. For a multi-path cache entry it is every
-    /// candidate location, so a row that reappears after a rescan with a *different* one
-    /// of those locations as its new display `path` (see `inFlight`'s doc comment) still
-    /// shares at least one key with the in-flight reclaim.
-    private nonisolated static func reclaimKeys(for finding: Finding) -> Set<String> {
-        Set(finding.reclaimPaths.map(\.path)).union([finding.path])
-    }
-
-    /// Marks `finding`'s reclaim as in flight, or refuses if any of its identity keys
-    /// already are — the double-confirm guard. Returns `false` (having done nothing) if
-    /// blocked; the caller must eventually call `endReclaim(for:)` on both the success
-    /// and failure paths of whatever it does after a `true` return.
+    /// Marks `finding`'s reclaim as in flight, or refuses if one already is. See
+    /// `ReclaimGuard.begin(_:)`. The caller must call `endReclaim(for:)` on both the
+    /// success and failure paths after a `true` return.
     ///
-    /// Internal (not `private`) so tests can exercise the guard directly rather than
-    /// through `resolve(_:)`, which would require actually invoking a Reclaimer call.
+    /// Internal (not `private`) so tests can exercise the guard through the engine
+    /// rather than only against `ReclaimGuard` in isolation.
     func beginReclaim(for finding: Finding) -> Bool {
-        let keys = Self.reclaimKeys(for: finding)
-        guard inFlight.isDisjoint(with: keys) else { return false }
-        inFlight.formUnion(keys)
-        return true
+        reclaimGuard.begin(finding)
     }
 
     /// Internal for the same reason as `beginReclaim(for:)`.
     func endReclaim(for finding: Finding) {
-        inFlight.subtract(Self.reclaimKeys(for: finding))
+        reclaimGuard.end(finding)
     }
 
     /// Thrown by `trashAll` when handed no paths. This is genuinely reachable, not just a
@@ -208,7 +167,7 @@ public final class ScanEngine: ObservableObject {
     /// find no `id` match and leave a phantom row for an already-trashed path. Matching
     /// on `path` too closes most of that gap, but not a multi-path cache entry whose
     /// display path shifted to a different one of its `reclaimPaths` after a rescan (see
-    /// `inFlight`'s doc comment) — matching when `reclaimPaths` intersect closes the rest.
+    /// `ReclaimGuard`) — matching when `reclaimPaths` intersect closes the rest.
     /// Also drops any leftover sizing bookkeeping for the removed row(s), in case a
     /// reclaim completes mid-scan while sizing was still pending for that finding.
     ///
@@ -223,10 +182,7 @@ public final class ScanEngine: ObservableObject {
 
         let removedIDs = diskFindings.filter(matches).map(\.id)
         diskFindings.removeAll(where: matches)
-        for id in removedIDs {
-            pendingSizeCounts[id] = nil
-            pendingSizeSums[id] = nil
-        }
+        sizeTally.forget(removedIDs)
     }
 
     /// Manual only — disk walks are I/O heavy and never run on the process timer.
@@ -257,52 +213,25 @@ public final class ScanEngine: ObservableObject {
     /// Internal (not `private`) so tests can seed `diskFindings` and the pending-size
     /// bookkeeping consistently, the same way `scanDisk()` does, without touching disk.
     func beginSizing(for findings: [Finding]) {
-        sizingGeneration += 1
         diskFindings = findings
         lastDiskScan = Date()
-        // `uniquingKeysWith` rather than `uniqueKeysWithValues`: the latter traps at
-        // runtime on a duplicate `Finding.ID`, which is a crash bug waiting to happen
-        // rather than a compile-time guarantee — `Finding.id` is caller-generated
-        // (`UUID()`), not validated unique by this initializer.
-        pendingSizeCounts = Dictionary(
-            findings.map { ($0.id, $0.reclaimPaths.count) },
-            uniquingKeysWith: { _, latest in latest }
-        )
-        pendingSizeSums = [:]
+        sizeTally.beginPass(for: findings)
     }
 
-    /// Sums bytes across every path a finding will actually reclaim (`Finding.reclaimPaths`)
-    /// so the displayed size always equals what the reclaim button will remove — a cache
-    /// entry backed by two on-disk locations (e.g. Yarn) is not "done" sizing until both
-    /// have reported, and only their sum is ever shown.
+    /// Applies a size report to whichever row owns `url`, finalizing that row's `bytes`
+    /// only once every path backing it has reported. The accumulation and ordering rules
+    /// live in `SizeTally`; this method's remaining job is mapping a URL back to its rows
+    /// and keeping the display sorted.
     ///
-    /// Two things make this safe against reports arriving out of the order a naive
-    /// implementation would assume:
-    /// - `generation` must match the pass current when this callback fires, or it is
-    ///   dropped outright — closes a stale report from a *previous* scan's still-draining
-    ///   callbacks landing against the new pass's (possibly reused) finding ids.
-    /// - A report for a finding with no entry left in `pendingSizeCounts` (already
-    ///   finalized, or never eligible) is ignored rather than "re-finalized" — a
-    ///   late-arriving duplicate of an already-summed path can no longer overwrite the
-    ///   correct total with a single path's bytes.
     /// A URL matching no live row (never present, or already removed by a completed
-    /// reclaim) is likewise a no-op.
+    /// reclaim) is a no-op, as is a report from a superseded sizing pass.
     func applySize(_ bytes: Int64, to url: URL, generation: Int) {
-        guard generation == sizingGeneration else { return }
+        guard sizeTally.accepts(generation: generation) else { return }
 
         for idx in diskFindings.indices
         where diskFindings[idx].reclaimPaths.contains(where: { $0.path == url.path }) {
-            let id = diskFindings[idx].id
-            guard let remaining = pendingSizeCounts[id] else { continue }
-
-            let sum = (pendingSizeSums[id] ?? 0) + bytes
-            if remaining - 1 <= 0 {
-                diskFindings[idx].bytes = sum
-                pendingSizeSums[id] = nil
-                pendingSizeCounts[id] = nil
-            } else {
-                pendingSizeSums[id] = sum
-                pendingSizeCounts[id] = remaining - 1
+            if let total = sizeTally.report(bytes, for: diskFindings[idx].id) {
+                diskFindings[idx].bytes = total
             }
         }
         sortDiskFindings()
