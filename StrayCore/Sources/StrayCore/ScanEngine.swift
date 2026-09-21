@@ -7,6 +7,10 @@ public final class ScanEngine: ObservableObject {
     @Published public var lastScan: Date?
     @Published public var isScanning = false
 
+    /// Every own-user process currently listening on a TCP port, one row per port.
+    /// Filled by the same pass as `findings` — see `scan()`.
+    @Published public var ports: [PortRow] = []
+
     // Disk scanning is manual-only and never touches the process-scan timer: disk walks
     // and sizing are I/O heavy, so they live in their own published lane.
     @Published public var diskFindings: [Finding] = []
@@ -57,12 +61,38 @@ public final class ScanEngine: ObservableObject {
             let procs = ProcessScanner.scan()
             let procFindings = Rules.evaluate(procs)
             let launchdFindings = LaunchdScanner.scanUserAgents()
+            // Same snapshot, same pass: the port walk reuses the PID set the process
+            // scan just gathered instead of enumerating processes a second time, and
+            // rides the same 5-minute timer. It is libproc calls only, no I/O, so it
+            // does not need the separate manual lane that disk scanning has.
+            let portsByPID = PortScanner.listeningPorts(for: procs.map(\.pid))
+            let portRows = PortRow.rows(
+                processes: procs,
+                portsByPID: portsByPID,
+                // Only for the PIDs that turned out to be listening: a working directory
+                // costs a syscall each and is only ever shown next to a port.
+                workingDirectories: ProcessScanner.workingDirectories(for: Array(portsByPID.keys))
+            )
             await MainActor.run {
                 self.findings = procFindings + launchdFindings
+                self.ports = portRows
                 self.lastScan = Date()
                 self.isScanning = false
             }
         }
+    }
+
+    /// Kills the process holding `row`'s port: SIGTERM, then SIGKILL if it is still
+    /// alive three seconds later (see `ProcessScanner.terminate`). The list is rescanned
+    /// shortly after so the row disappears on its own rather than lingering as a button
+    /// with nothing behind it.
+    ///
+    /// Deliberately unguarded by `ReclaimGuard`, which keys on the paths a reclaim
+    /// deletes: a second kill of an already-dead PID fails harmlessly, and the rescan
+    /// removes the row either way.
+    public func terminate(_ row: PortRow) {
+        ProcessScanner.terminate(pid: row.pid)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.scan() }
     }
 
     public func resolve(_ finding: Finding) {

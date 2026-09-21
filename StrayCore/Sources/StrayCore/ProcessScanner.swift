@@ -83,6 +83,32 @@ enum ProcessScanner {
         return args.isEmpty ? nil : args.joined(separator: " ")
     }
 
+    /// Current working directory per PID, for the PIDs that have one readable.
+    ///
+    /// Only called for the handful of processes that turned out to be listening, never
+    /// for the several hundred in a full scan: this is one more `proc_pidinfo` per PID,
+    /// and the answer is only ever shown next to a port.
+    ///
+    /// A PID with no readable directory — it exited, or it belongs to another user — is
+    /// absent from the result rather than mapped to an empty string, which would read
+    /// downstream as a real directory that happens to be nameless.
+    static func workingDirectories(for pids: [pid_t]) -> [pid_t: String] {
+        var result: [pid_t: String] = [:]
+        for pid in pids {
+            var info = proc_vnodepathinfo()
+            let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { continue }
+
+            let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+                    String(cString: $0)
+                }
+            }
+            if !path.isEmpty { result[pid] = path }
+        }
+        return result
+    }
+
     /// SIGTERM; if still alive after `grace` seconds, SIGKILL.
     @discardableResult
     static func terminate(pid: pid_t, grace: TimeInterval = 3) -> Bool {

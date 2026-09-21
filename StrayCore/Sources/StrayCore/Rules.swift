@@ -54,7 +54,7 @@ enum Rules {
     /// ".../cache/thedotmack/claude-mem/10.6.0/scripts/mcp-server.cjs" → "claude-mem".
     /// Package dirs sit right before their version dir; without a version component
     /// (npx caches, global bins) there is nothing to anchor on, so return nil.
-    private static func packageName(from path: String) -> String? {
+    static func packageName(from path: String) -> String? {
         let comps = (path as NSString).pathComponents
         guard let versionIdx = comps.lastIndex(where: isVersion), versionIdx > 0 else { return nil }
         return comps[versionIdx - 1]
@@ -98,10 +98,11 @@ enum Rules {
 
     // Rule 3: generic orphaned node/bun running for over 24h (metro, dev servers, watchers).
     private static func orphanNodeProcesses(_ procs: [ScannedProcess]) -> [Finding] {
-        let runtimes = ["node", "bun", "deno"]
-        return procs.filter { p in
+        procs.filter { p in
             p.isOrphan
-                && runtimes.contains(p.binaryName)
+                // Same set the Ports list is built from, kept in one place so the two
+                // features can never disagree about what counts as a JS runtime.
+                && PortRow.runtimes.contains(p.binaryName)
                 && Date().timeIntervalSince(p.startedAt) > 86_400
                 && !mcpPatterns.contains { p.arguments.contains($0) } // already covered by rule 1
         }.map { p in
