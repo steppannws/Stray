@@ -1,4 +1,5 @@
 import SwiftUI
+import StrayCore
 
 @main
 struct StrayApp: App {

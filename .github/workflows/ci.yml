@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  # This work currently lives on a feature branch, so `push` alone would not
+  # fire; `pull_request` is what actually gates it until the branch merges.
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Runs first and on Linux because it is free and fast: a bad runner label or
+  # a malformed step would otherwise only surface after queueing for a macOS
+  # runner, and a wrong `runs-on` cannot be caught by the job it breaks.
+  # actionlint validates runner labels against the real list, checks step
+  # structure, and shellchecks every `run:` block.
+  #
+  # This exists because the runner label was wrong once already: macos-14
+  # could not supply this repo's toolchain and was deprecated upstream, and
+  # nothing in the workflow or the local test runs could tell.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
+  test:
+    # The suite is headless (StrayCore is a plain SPM package with no app
+    # host), but the code under test calls Darwin process APIs and
+    # FileManager's trash/file-coordination machinery, so it needs macOS.
+    #
+    # macos-15 rather than macos-14: this package only needs macOS 14, but
+    # the macos-14 image is deprecated upstream and already being
+    # brownout-tested ahead of removal. Pinned rather than macos-latest so a
+    # runner rollover cannot silently change the OS under the suite.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Test StrayCore
+        working-directory: StrayCore
+        run: swift test
+
+      # The app target is UI-only now, but it still has to compile against
+      # StrayCore's public surface - the split means a breaking change there
+      # would otherwise only surface at release time.
+      - name: Build the app
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -scheme Stray -destination 'platform=macOS' build

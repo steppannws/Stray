@@ -759,7 +759,7 @@ Extends Task 1's guard-only `Reclaimer` with the three actions that actually fre
 
 **Interfaces:**
 - Consumes: `Reclaimer.assertSafe(_:scanRoots:)` from Task 1, `CacheCatalog.dockerAvailable` from Task 2
-- Produces: `Reclaimer.trash(_ url: URL, scanRoots: [URL]) throws`, `Reclaimer.simctlDeleteUnavailable() throws`, `Reclaimer.dockerImagePrune() throws`, `Reclaimer.trashSize() -> Int64`, `Reclaimer.emptyTrash() throws`, `ReclaimError.commandFailed(Int32)`
+- Produces: `Reclaimer.trash(_ url: URL, scanRoots: [URL]) throws`, `Reclaimer.simctlDeleteUnavailable() throws`, `Reclaimer.dockerImagePrune() throws`, `Reclaimer.emptyTrash() throws`, `ReclaimError.commandFailed(Int32)`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -790,9 +790,6 @@ import Foundation
     }
 }
 
-@Test func trashSizeIsNonNegative() {
-    #expect(Reclaimer.trashSize() >= 0)
-}
 ```
 
 Note: `simctlDeleteUnavailable` and `dockerImagePrune` are not unit-tested — both mutate global machine state and shelling out in a test would delete real simulators or images. They are verified manually in Task 7.
@@ -828,19 +825,24 @@ Add to `Stray/Core/Disk/Reclaimer.swift` — extend `ReclaimError` with `case co
         try run(docker, ["image", "prune", "-f"])
     }
 
-    static func trashSize() -> Int64 {
-        let trash = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".Trash")
-        guard FileManager.default.fileExists(atPath: trash.path) else { return 0 }
-        return SizeProbe.size(of: trash)
-    }
-
+    /// Empties the Trash by asking Finder to do it.
+    ///
+    /// `~/.Trash` is TCC-protected: reading or enumerating it requires Full Disk Access,
+    /// which this app deliberately does not request. Finder already holds that access, so
+    /// delegating costs only a one-time Automation prompt instead of blanket disk access.
+    /// Verified on this machine: `contentsOfDirectory` on `~/.Trash` fails with EPERM
+    /// (NSCocoaErrorDomain 257) for a process without FDA.
+    ///
+    /// There is deliberately no `trashSize()` — reporting the Trash's size would require
+    /// the FDA grant this design avoids.
     static func emptyTrash() throws {
-        let fm = FileManager.default
-        let trash = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        for entry in (try? fm.contentsOfDirectory(atPath: trash.path)) ?? [] {
-            try? fm.removeItem(at: trash.appendingPathComponent(entry))
+        let source = "tell application \"Finder\" to empty trash"
+        var error: NSDictionary?
+        guard let script = NSAppleScript(source: source) else {
+            throw ReclaimError.commandFailed(-1)
         }
+        script.executeAndReturnError(&error)
+        if error != nil { throw ReclaimError.commandFailed(-2) }
     }
 
     private static func run(_ launchPath: String, _ arguments: [String]) throws {
@@ -878,8 +880,8 @@ git commit -m "feat: add trash, simctl and docker reclaim actions"
 - Modify: `Stray/Core/ScanEngine.swift`
 
 **Interfaces:**
-- Consumes: `DiskScanner.scan(roots:)`, `CacheCatalog.present()`, `SizeProbe.sizes(for:onResult:)`, `Reclaimer.trash(_:scanRoots:)`, `Reclaimer.simctlDeleteUnavailable()`, `Reclaimer.dockerImagePrune()`, `Reclaimer.trashSize()`, `Reclaimer.emptyTrash()`
-- Produces: `Finding.bytes: Int64?`, `Finding.isActiveProject: Bool`, `FindingKind.projectJunk`, `FindingKind.toolCache`, `ScanEngine.diskFindings`, `ScanEngine.isDiskScanning`, `ScanEngine.trashBytes`, `ScanEngine.reclaimableBytes`, `ScanEngine.scanDisk()`, `ScanEngine.emptyTrash()`
+- Consumes: `DiskScanner.scan(roots:)`, `CacheCatalog.present()`, `SizeProbe.sizes(for:onResult:)`, `Reclaimer.trash(_:scanRoots:)`, `Reclaimer.simctlDeleteUnavailable()`, `Reclaimer.dockerImagePrune()`, `Reclaimer.emptyTrash()`
+- Produces: `Finding.bytes: Int64?`, `Finding.isActiveProject: Bool`, `FindingKind.projectJunk`, `FindingKind.toolCache`, `ScanEngine.diskFindings`, `ScanEngine.isDiskScanning`, `ScanEngine.reclaimableBytes`, `ScanEngine.scanDisk()`, `ScanEngine.emptyTrash()`
 
 - [ ] **Step 1: Extend `FindingKind` and `Finding`**
 
@@ -924,7 +926,6 @@ In `Stray/Core/ScanEngine.swift`, add these published properties next to the exi
     @Published var diskFindings: [Finding] = []
     @Published var isDiskScanning = false
     @Published var lastDiskScan: Date?
-    @Published var trashBytes: Int64?
 
     var reclaimableBytes: Int64 {
         diskFindings.compactMap(\.bytes).reduce(0, +)
@@ -954,9 +955,7 @@ Then add the scan itself. Discovery publishes immediately with `bytes: nil`; siz
                 Task { @MainActor in self.applySize(bytes, to: url) }
             }
 
-            let trash = Reclaimer.trashSize()
             await MainActor.run {
-                self.trashBytes = trash
                 self.diskFindings.sort { ($0.bytes ?? 0) > ($1.bytes ?? 0) }
                 self.isDiskScanning = false
             }
@@ -997,10 +996,9 @@ Then add the scan itself. Discovery publishes immediately with `bytes: nil`; siz
         )
     }
 
+    /// Delegates to Finder; see Reclaimer.emptyTrash for why.
     func emptyTrash() {
         try? Reclaimer.emptyTrash()
-        let trash = Reclaimer.trashSize()
-        trashBytes = trash
     }
 ```
 
@@ -1022,7 +1020,6 @@ In `ScanEngine.resolve(_:)`, extend the `switch finding.kind` with:
         case .projectJunk:
             try? Reclaimer.trash(URL(fileURLWithPath: finding.path), scanRoots: DiskScanner.defaultRoots)
             diskFindings.removeAll { $0.id == finding.id }
-            trashBytes = Reclaimer.trashSize()
         case .toolCache:
             resolveCache(finding)
 ```
@@ -1043,7 +1040,6 @@ and add:
             try? Reclaimer.dockerImagePrune()
         }
         diskFindings.removeAll { $0.id == finding.id }
-        trashBytes = Reclaimer.trashSize()
     }
 ```
 
@@ -1074,7 +1070,7 @@ git commit -m "feat: wire disk scan lane into ScanEngine"
 - Modify: `Stray/UI/MenuView.swift`
 
 **Interfaces:**
-- Consumes: `ScanEngine.diskFindings`, `ScanEngine.isDiskScanning`, `ScanEngine.reclaimableBytes`, `ScanEngine.trashBytes`, `ScanEngine.scanDisk()`, `ScanEngine.emptyTrash()`, `Finding.sizeDescription`, `Finding.isActiveProject`
+- Consumes: `ScanEngine.diskFindings`, `ScanEngine.isDiskScanning`, `ScanEngine.reclaimableBytes`, `ScanEngine.scanDisk()`, `ScanEngine.emptyTrash()`, `Finding.sizeDescription`, `Finding.isActiveProject`
 - Produces: nothing consumed by later tasks
 
 - [ ] **Step 1: Add the Disk section**
@@ -1158,10 +1154,8 @@ In `FindingRow.actionLabel`, add before `default:`:
 In `MenuView.footer`, insert before the existing `Spacer()`:
 
 ```swift
-            if let trash = engine.trashBytes, trash > 0 {
-                Text("Trash: \(ByteCountFormatter.string(fromByteCount: trash, countStyle: .file))")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Button("Empty") { engine.emptyTrash() }
+            if !engine.diskFindings.isEmpty || engine.lastDiskScan != nil {
+                Button("Empty Trash") { engine.emptyTrash() }
                     .buttonStyle(.borderless).font(.caption2)
             }
 ```
@@ -1195,7 +1189,7 @@ Pick a **low-stakes** row — a `node_modules` in a project you are not working 
 2. Click again.
 3. Confirm the row disappears and the directory is gone from disk (`ls` the path).
 4. Confirm it is present in `~/.Trash`.
-5. Confirm the footer `Trash:` figure grew.
+5. Confirm the item is present in `~/.Trash` via Finder (the app cannot enumerate it).
 6. Click `Empty`, confirm `~/.Trash` is emptied and `df -h /System/Volumes/Data` shows the space returned.
 
 - [ ] **Step 8: Screenshot the result**
@@ -1217,7 +1211,7 @@ git commit -m "feat: add disk section with progressive sizes and trash controls"
 
 ## Self-Review
 
-**Spec coverage:** `CacheCatalog` → Task 2. `DiskScanner` incl. sibling markers and dot-dir rule → Task 3. `SizeProbe` incl. symlink and concurrency rules → Task 4. `Reclaimer` guard → Task 1, actions → Task 5. Model changes (`bytes`, new kinds) → Task 6. Data flow (discover → publish → size progressively → sort) → Task 6 Step 3. UI (two sections, reclaimable total, active chip, Trash+Empty) → Task 7. Error handling (per-row, non-aborting) → Task 6 Steps 3–4 via `try?` per row. Testing (`assertSafe`, catalog validation, match rules) → Tasks 1–3.
+**Spec coverage:** `CacheCatalog` → Task 2. `DiskScanner` incl. sibling markers and dot-dir rule → Task 3. `SizeProbe` incl. symlink and concurrency rules → Task 4. `Reclaimer` guard → Task 1, actions → Task 5. Model changes (`bytes`, new kinds) → Task 6. Data flow (discover → publish → size progressively → sort) → Task 6 Step 3. UI (two sections, reclaimable total, active chip, Empty Trash) → Task 7. Error handling (per-row, non-aborting) → Task 6 Steps 3–4 via `try?` per row. Testing (`assertSafe`, catalog validation, match rules) → Tasks 1–3.
 
 **Deviations from the spec, deliberate:** the spec listed `~/.gradle`; the catalog uses `~/.gradle/caches` because `~/.gradle` also holds `gradle.properties` and wrapper configuration. `Finding.severity` for disk rows is `.info`, so the existing dot renders orange rather than red — disk findings are not urgent the way an orphaned process is.
 

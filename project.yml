@@ -3,21 +3,45 @@ options:
   bundleIdPrefix: com.stepan
   deploymentTarget:
     macOS: "14.0"
+# The scanning/sizing/reclaim logic lives in the StrayCore SPM package, not
+# in this target. It used to sit in the app target, which meant its tests
+# needed the app as a test host and so could never run headlessly or in CI —
+# on code whose whole job is to irreversibly delete files. `cd StrayCore &&
+# swift test` now runs that suite on its own; this project builds the UI on
+# top of it.
+packages:
+  StrayCore:
+    path: StrayCore
 targets:
   Stray:
     type: application
     platform: macOS
     sources: [Stray]
+    dependencies:
+      - package: StrayCore
+        product: StrayCore
     info:
       path: Stray/Resources/Info.plist
       properties:
         CFBundleDisplayName: Stray
         LSUIElement: true # menu bar only, no Dock icon
         NSHumanReadableCopyright: ""
+        NSAppleEventsUsageDescription: "Stray asks Finder to empty the Trash on your behalf when you reclaim disk space."
     settings:
       base:
         SWIFT_VERSION: "5.10"
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Stray/Resources/Stray.entitlements
         # No App Sandbox on purpose: we need to list all of the user's processes
         ENABLE_APP_SANDBOX: false
+schemes:
+  Stray:
+    build:
+      targets:
+        Stray: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: []
