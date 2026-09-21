@@ -12,6 +12,8 @@ sessions, dead launchd agents, forgotten dev servers, and the disk they quietly 
 ![Tests 88](https://img.shields.io/badge/tests-88-success?style=flat-square)
 ![No sandbox](https://img.shields.io/badge/sandbox-deliberately_off-orange?style=flat-square)
 
+Read the story: [Your AI Coding Assistant Is Leaving Processes Behind](https://medium.com/@stepannikulenko/your-ai-coding-assistant-is-leaving-processes-behind-bf2a43a658df)
+
 </div>
 
 ---
