@@ -15,6 +15,9 @@ settings:
 packages:
   StrayCore:
     path: StrayCore
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.10.0"
 targets:
   Stray:
     type: application
@@ -36,6 +39,7 @@ targets:
         codeSign: false # signed as its own target; re-signing here would drop its identifier
         copy:
           destination: executables
+      - package: Sparkle
     info:
       path: Stray/Resources/Info.plist
       properties:
@@ -46,6 +50,10 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSApplicationCategoryType: public.app-category.developer-tools
+        # Sparkle. The feed is appcast.xml on main; scripts/appcast.sh regenerates it.
+        SUFeedURL: https://raw.githubusercontent.com/steppannws/Stray/main/appcast.xml
+        SUPublicEDKey: Ac95Gx4ZyzVQTM6sY8a5K7VRr8tvpQ4gyyob2iJRUVQ=
+        SUEnableAutomaticChecks: true
     settings:
       base:
         SWIFT_VERSION: "5.10"

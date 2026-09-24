@@ -98,6 +98,22 @@ xcrun notarytool store-credentials stray-notary --apple-id <apple id> --team-id 
 Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml` first; the build
 number must only ever grow.
 
+Updates ship through [Sparkle](https://sparkle-project.org). `scripts/appcast.sh` signs
+the new zip with the EdDSA key in the login keychain and adds it to `appcast.xml`, which
+the app reads from `main`. Publish the GitHub Release before pushing the appcast, so the
+feed never points at a download that does not exist yet:
+
+```bash
+scripts/release.sh
+scripts/appcast.sh
+gh release create v1.0.1 build/release/Stray-1.0.1.zip
+git add appcast.xml && git commit -m "Release 1.0.1" && git push
+```
+
+The private key lives only in the keychain. Back it up with
+`build/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys -x <file>`; without it,
+no installed copy can be updated again.
+
 ## How it works
 
 **Ports come from `libproc`, not `lsof`.** Stray walks each PID's file descriptors, keeps
