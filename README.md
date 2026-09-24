@@ -83,6 +83,19 @@ The app has no Dock icon (`LSUIElement`). Look for the paw in the menu bar.
 cd StrayCore && swift test   # 88 tests, no app host, no simulator
 ```
 
+### Release
+
+`scripts/release.sh` archives, exports with Developer ID, notarizes, staples and zips to
+`build/release/Stray-<version>.zip`. It needs a Developer ID Application certificate for
+the team and notary credentials stored once:
+
+```bash
+xcrun notarytool store-credentials stray-notary --apple-id <apple id> --team-id 97AYLS48JS
+```
+
+Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml` first; the build
+number must only ever grow.
+
 ## How it works
 
 **Ports come from `libproc`, not `lsof`.** Stray walks each PID's file descriptors, keeps

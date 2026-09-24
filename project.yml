@@ -27,9 +27,17 @@ targets:
         LSUIElement: true # menu bar only, no Dock icon
         NSHumanReadableCopyright: ""
         NSAppleEventsUsageDescription: "Stray asks Finder to empty the Trash on your behalf when you reclaim disk space."
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSApplicationCategoryType: public.app-category.developer-tools
     settings:
       base:
         SWIFT_VERSION: "5.10"
+        # Bump both for every release. CURRENT_PROJECT_VERSION must only ever grow:
+        # it is what an updater compares to decide whether a build is newer.
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEVELOPMENT_TEAM: 97AYLS48JS
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Stray/Resources/Stray.entitlements
