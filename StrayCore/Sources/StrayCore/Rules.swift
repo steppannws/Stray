@@ -4,25 +4,29 @@ import Foundation
 /// This is where the real product value lives: add heuristics, not APIs.
 enum Rules {
 
-    static func evaluate(_ procs: [ScannedProcess]) -> [Finding] {
+    /// `extraMCPPatterns` come from `Whitelist.extraMCPPatterns` and extend the built-in
+    /// list for all three rules, so a user pattern changes what counts as MCP tooling
+    /// everywhere at once.
+    static func evaluate(_ procs: [ScannedProcess], extraMCPPatterns: [String] = []) -> [Finding] {
+        let patterns = mcpPatterns + extraMCPPatterns.filter { !$0.isEmpty }
         var findings: [Finding] = []
-        findings += orphanMCPServers(procs)
-        findings += duplicateBinaries(procs)
-        findings += orphanNodeProcesses(procs)
+        findings += orphanMCPServers(procs, patterns: patterns)
+        findings += duplicateBinaries(procs, patterns: patterns)
+        findings += orphanNodeProcesses(procs, patterns: patterns)
         return findings.sorted { $0.severity > $1.severity }
     }
 
     // Rule 1: orphaned MCP servers.
     // Signature: PPID == 1 + path/args match MCP/agent tooling patterns.
-    private static let mcpPatterns = [
+    static let mcpPatterns = [
         "/_npx/", "mcp-server", "-mcp", "/.claude/", "modelcontextprotocol"
     ]
 
-    private static func orphanMCPServers(_ procs: [ScannedProcess]) -> [Finding] {
+    private static func orphanMCPServers(_ procs: [ScannedProcess], patterns: [String]) -> [Finding] {
         procs.filter { p in
-            p.isOrphan && mcpPatterns.contains { p.arguments.contains($0) }
+            p.isOrphan && patterns.contains { p.arguments.contains($0) }
         }.map { p in
-            Finding(
+            var finding = Finding(
                 kind: .orphanMCP,
                 severity: .strong,
                 title: mcpName(from: p.arguments) ?? p.binaryName,
@@ -31,6 +35,8 @@ enum Rules {
                 path: p.path,
                 startedAt: p.startedAt
             )
+            finding.ignoreKey = mcpName(from: p.arguments) ?? p.arguments
+            return finding
         }
     }
 
@@ -68,9 +74,9 @@ enum Rules {
     // Rule 2: same binary with multiple instances from different trees,
     // started more than 1h apart (two legitimate sessions usually start together... not always;
     // hence severity warning and not strong: we show evidence, the user decides).
-    private static func duplicateBinaries(_ procs: [ScannedProcess]) -> [Finding] {
+    private static func duplicateBinaries(_ procs: [ScannedProcess], patterns: [String]) -> [Finding] {
         let interesting = procs.filter { p in
-            mcpPatterns.contains { p.arguments.contains($0) } && !p.isOrphan
+            patterns.contains { p.arguments.contains($0) } && !p.isOrphan
         }
         let groups = Dictionary(grouping: interesting) {
             mcpName(from: $0.arguments) ?? $0.binaryName
@@ -83,7 +89,7 @@ enum Rules {
                   newest.startedAt.timeIntervalSince(oldest.startedAt) > 3600
             else { return nil }
             let toKill = sorted.dropLast() // everything but the newest
-            return Finding(
+            var finding = Finding(
                 kind: .duplicate,
                 severity: .warning,
                 title: "\(name) ×\(instances.count)",
@@ -93,20 +99,25 @@ enum Rules {
                 path: oldest.path,
                 startedAt: oldest.startedAt
             )
+            // The group key when it is an MCP/script name. A bare binary name is not
+            // safe to ignore by substring, so that case falls back to the whole command
+            // line — the one string certain to match this server and little else.
+            finding.ignoreKey = mcpName(from: oldest.arguments) ?? oldest.arguments
+            return finding
         }
     }
 
     // Rule 3: generic orphaned node/bun running for over 24h (metro, dev servers, watchers).
-    private static func orphanNodeProcesses(_ procs: [ScannedProcess]) -> [Finding] {
+    private static func orphanNodeProcesses(_ procs: [ScannedProcess], patterns: [String]) -> [Finding] {
         procs.filter { p in
             p.isOrphan
                 // Same set the Ports list is built from, kept in one place so the two
                 // features can never disagree about what counts as a JS runtime.
                 && PortRow.runtimes.contains(p.binaryName)
                 && Date().timeIntervalSince(p.startedAt) > 86_400
-                && !mcpPatterns.contains { p.arguments.contains($0) } // already covered by rule 1
+                && !patterns.contains { p.arguments.contains($0) } // already covered by rule 1
         }.map { p in
-            Finding(
+            var finding = Finding(
                 kind: .orphanProcess,
                 severity: .warning,
                 title: p.binaryName,
@@ -115,6 +126,10 @@ enum Rules {
                 path: p.path,
                 startedAt: p.startedAt
             )
+            // The script it runs (`metro`, `vite.js`), never the bare runtime path,
+            // which every node process on the machine shares.
+            finding.ignoreKey = mcpName(from: p.arguments) ?? p.arguments
+            return finding
         }
     }
 }
