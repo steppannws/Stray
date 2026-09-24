@@ -59,7 +59,7 @@ if you already suspect they exist — the point of Stray is that you don't.
 | 1 | **Orphan MCP servers** | `PPID == 1` and the command line matches MCP tooling (`/_npx/`, `-mcp`, `mcp-server`, `/.claude/`) |
 | 2 | **Duplicate instances** | Same server name, multiple process trees, started more than an hour apart |
 | 3 | **Orphan runtimes** | `node` / `bun` / `deno` reparented to launchd and up for over 24h |
-| 4 | **Orphan LaunchAgents** | `~/Library/LaunchAgents/*.plist` pointing at a binary that no longer exists |
+| 4 | **Orphan launchd jobs** | `~/Library/LaunchAgents` or `/Library/LaunchDaemons` plists pointing at a binary that no longer exists |
 | 5 | **Listening ports** | Every JS dev server holding a TCP socket in `LISTEN` — stale or not |
 | 6 | **Reclaimable disk** | 15 known tool caches, plus `node_modules`, `.next`, `.venv`, `target`, `build` |
 
@@ -125,6 +125,11 @@ The app deletes things, so the rules about deleting are the design:
   offer to delete it.
 - **`ReclaimGuard`** refuses a confirm whose path shifted between being shown and being
   clicked.
+- **The root helper trusts nothing it is sent.** It is registered only the first time you
+  clean a system daemon, accepts connections only from Stray signed by the same team, and
+  re-checks every path itself: a root-owned regular file directly in
+  `/Library/LaunchDaemons`, no symlinks, whose program is *still* missing. Removed plists
+  go to `/Library/Application Support/Stray/RemovedDaemons/`, not away.
 
 ## Architecture
 
@@ -134,11 +139,13 @@ StrayCore/          SPM package — scanning, sizing, reclaim. Pure, headless, t
 ├── PortScanner     libproc: listening TCP sockets
 ├── Rules           rules 1–3; the actual product
 ├── LaunchdScanner  rule 4
+├── SystemDaemons   the helper's XPC contract and the checks it runs as root
 ├── PortRow         rule 5 — joins processes to ports, pure and testable
 ├── ReclaimGuard    refuses stale confirms
 └── Disk/           catalog, walker, sizer, reclaimer
 
 Stray/              SwiftUI MenuBarExtra. Renders StrayCore, owns no logic.
+StrayHelper/        Root daemon (SMAppService). Removes orphaned system daemons, nothing else.
 ```
 
 The core used to live in the app target, which meant its tests needed the app as a test
@@ -155,7 +162,7 @@ direct distribution with notarization is the path, same as Pearcleaner and Stats
 ## Roadmap
 
 - [ ] Developer ID signing + notarization, so builds open without `xattr` gymnastics
-- [ ] Privileged helper via `SMAppService.daemon` for `/Library/LaunchDaemons`
+- [x] Privileged helper via `SMAppService.daemon` for `/Library/LaunchDaemons`
 - [ ] Per-rule whitelist and custom patterns
 - [ ] Launch at login
 - [ ] Sparkle auto-updates
