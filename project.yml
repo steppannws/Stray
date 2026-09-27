@@ -9,6 +9,9 @@ options:
 # on code whose whole job is to irreversibly delete files. `cd StrayCore &&
 # swift test` now runs that suite on its own; this project builds the UI on
 # top of it.
+settings:
+  base:
+    DEVELOPMENT_TEAM: 97AYLS48JS
 packages:
   StrayCore:
     path: StrayCore
@@ -16,10 +19,23 @@ targets:
   Stray:
     type: application
     platform: macOS
-    sources: [Stray]
+    sources:
+      - path: Stray
+        excludes: [Resources/LaunchDaemons]
+      # Where SMAppService.daemon(plistName:) looks for the helper's launchd plist.
+      - path: Stray/Resources/LaunchDaemons/com.stepan.Stray.Helper.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchDaemons
     dependencies:
       - package: StrayCore
         product: StrayCore
+      - target: StrayHelper
+        embed: true
+        codeSign: false # signed as its own target; re-signing here would drop its identifier
+        copy:
+          destination: executables
     info:
       path: Stray/Resources/Info.plist
       properties:
@@ -37,12 +53,31 @@ targets:
         # it is what an updater compares to decide whether a build is newer.
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
-        DEVELOPMENT_TEAM: 97AYLS48JS
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Stray/Resources/Stray.entitlements
         # No App Sandbox on purpose: we need to list all of the user's processes
         ENABLE_APP_SANDBOX: false
+  StrayHelper:
+    type: tool
+    platform: macOS
+    sources: [StrayHelper]
+    dependencies:
+      - package: StrayCore
+        product: StrayCore
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        PRODUCT_BUNDLE_IDENTIFIER: com.stepan.Stray.Helper
+        # A tool has no bundle, so its identity comes from an Info.plist embedded in
+        # the binary. Helper.helperRequirement checks that identifier.
+        GENERATE_INFOPLIST_FILE: true
+        CREATE_INFOPLIST_SECTION_IN_BINARY: true
+        ENABLE_HARDENED_RUNTIME: true
+        CODE_SIGN_STYLE: Automatic
+        # Ships inside Stray.app, not on its own; without this an archive becomes a
+        # generic archive that cannot be exported as an app.
+        SKIP_INSTALL: true
 schemes:
   Stray:
     build:
