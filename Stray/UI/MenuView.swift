@@ -4,7 +4,6 @@ import StrayCore
 struct MenuView: View {
     @EnvironmentObject var engine: ScanEngine
     @State private var tab: Tab = .ports
-    @State private var showEmptyTrashConfirmation = false
 
     /// The three things Stray does. They used to be stacked in one scroll view, which
     /// gave each about a third of the height and made all three hard to read at once;
@@ -190,27 +189,35 @@ struct MenuView: View {
     /// and the user put there for unrelated reasons. A same-label, two-click inline
     /// confirm is exactly the shape an automation or accessibility harness reads as "the
     /// click didn't land" and retries, and the retry fires the destructive action. A
-    /// modal `.confirmationDialog` forces an explicit, distinctly-labelled choice.
+    /// modal alert forces an explicit, distinctly-labelled choice.
     @ViewBuilder
     private var emptyTrashButton: some View {
         if !engine.diskFindings.isEmpty || engine.lastDiskScan != nil {
             Button("Empty Trash") {
-                showEmptyTrashConfirmation = true
+                confirmEmptyTrash()
             }
             .buttonStyle(.borderless).font(.caption)
             .help("Asks Finder to empty the Trash. macOS will prompt once to allow Stray to control Finder.")
-            .confirmationDialog(
-                "Empty the Trash?",
-                isPresented: $showEmptyTrashConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Empty Trash", role: .destructive) {
-                    engine.emptyTrash()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This permanently deletes everything currently in the Trash, not just what Stray found. This cannot be undone.")
-            }
+        }
+    }
+
+    /// An `NSAlert`, not `.confirmationDialog`: Stray is an accessory app and the
+    /// `MenuBarExtra` panel never activates it, so a SwiftUI dialog attached to that
+    /// panel appears but never becomes key and swallows every click. Activating the app
+    /// first and running the alert app-modal gives it a window that takes input.
+    private func confirmEmptyTrash() {
+        let alert = NSAlert()
+        alert.messageText = "Empty the Trash?"
+        alert.informativeText = "This permanently deletes everything currently in the Trash, not just what Stray found. This cannot be undone."
+        alert.alertStyle = .warning
+        let confirm = alert.addButton(withTitle: "Empty Trash")
+        confirm.hasDestructiveAction = true
+        confirm.keyEquivalent = ""
+        let cancel = alert.addButton(withTitle: "Cancel")
+        cancel.keyEquivalent = "\r"
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn {
+            engine.emptyTrash()
         }
     }
 
