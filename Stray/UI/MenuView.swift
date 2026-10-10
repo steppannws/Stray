@@ -30,8 +30,10 @@ struct MenuView: View {
                 diskToolbar
             }
             Divider()
+            // A fixed height, not just a max: the MenuBarExtra window sizes to the
+            // scroll view's ideal height, which collapses it to about one row.
             ScrollView { rows }
-                .frame(maxHeight: 420)
+                .frame(height: 420)
             if let lastError = engine.lastError {
                 Divider()
                 errorBanner(lastError)
