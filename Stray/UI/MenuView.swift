@@ -4,6 +4,7 @@ import StrayCore
 struct MenuView: View {
     @EnvironmentObject var engine: ScanEngine
     @State private var tab: Tab = .ports
+    @State private var showingIgnoreList = false
 
     /// The three things Stray does. They used to be stacked in one scroll view, which
     /// gave each about a third of the height and made all three hard to read at once;
@@ -22,18 +23,23 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            tabPicker
-            // Pinned above the scroll view, so the disk controls stay reachable no
-            // matter how long the list below them gets.
-            if tab == .disk {
+            if showingIgnoreList {
+                ScrollView { IgnoreListView() }
+                    .frame(height: 460)
+            } else {
+                tabPicker
+                // Pinned above the scroll view, so the disk controls stay reachable no
+                // matter how long the list below them gets.
+                if tab == .disk {
+                    Divider()
+                    diskToolbar
+                }
                 Divider()
-                diskToolbar
+                // A fixed height, not just a max: the MenuBarExtra window sizes to the
+                // scroll view's ideal height, which collapses it to about one row.
+                ScrollView { rows }
+                    .frame(height: 420)
             }
-            Divider()
-            // A fixed height, not just a max: the MenuBarExtra window sizes to the
-            // scroll view's ideal height, which collapses it to about one row.
-            ScrollView { rows }
-                .frame(height: 420)
             if let lastError = engine.lastError {
                 Divider()
                 errorBanner(lastError)
@@ -46,7 +52,7 @@ struct MenuView: View {
 
     private var header: some View {
         HStack {
-            Text("Stray").font(.headline)
+            Text(showingIgnoreList ? "Ignored" : "Stray").font(.headline)
             Spacer()
             if engine.isScanning {
                 ProgressView().controlSize(.small)
@@ -58,6 +64,13 @@ struct MenuView: View {
             }
             .buttonStyle(.borderless)
             .help("Rescan processes and ports")
+            Button {
+                showingIgnoreList.toggle()
+            } label: {
+                Image(systemName: showingIgnoreList ? "xmark" : "eye.slash")
+            }
+            .buttonStyle(.borderless)
+            .help(showingIgnoreList ? "Back to findings" : "What Stray is ignoring")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -135,6 +148,7 @@ struct MenuView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(engine.findings) { finding in
                     FindingRow(finding: finding) { engine.resolve(finding) }
+                        .contextMenu { ignoreMenu(for: finding) }
                     Divider().padding(.leading, 12)
                 }
             }
@@ -156,9 +170,35 @@ struct MenuView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(engine.diskFindings) { finding in
                     FindingRow(finding: finding) { engine.resolve(finding) }
+                        .contextMenu { ignoreMenu(for: finding) }
                     Divider().padding(.leading, 12)
                 }
             }
+        }
+    }
+
+    /// The ways to stop flagging `finding`, narrowest first. A process is silenced by
+    /// what it runs (`ignoreKey`), a file finding by its path, and either by switching
+    /// its whole rule off.
+    @ViewBuilder
+    private func ignoreMenu(for finding: Finding) -> some View {
+        if let key = finding.ignoreKey {
+            Button("Never flag \u{201C}\(key.prefix(60))\u{201D}") {
+                engine.updateWhitelist { $0.ignoredCommands.append(key) }
+            }
+        } else if finding.pid == nil, finding.pathURL != nil {
+            Button("Never flag this path") {
+                engine.updateWhitelist { $0.ignoredPaths.append(finding.path) }
+            }
+            if finding.kind == .projectJunk {
+                let project = (finding.path as NSString).deletingLastPathComponent
+                Button("Never flag anything in \((project as NSString).lastPathComponent)") {
+                    engine.updateWhitelist { $0.ignoredPaths.append(project) }
+                }
+            }
+        }
+        Button("Turn off \u{201C}\(finding.kind.rawValue)\u{201D} rule") {
+            engine.updateWhitelist { $0.ignoredKinds.insert(finding.kind) }
         }
     }
 

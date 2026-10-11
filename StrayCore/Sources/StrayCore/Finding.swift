@@ -1,6 +1,6 @@
 import Foundation
 
-public enum FindingKind: String, CaseIterable {
+public enum FindingKind: String, CaseIterable, Codable {
     case orphanMCP = "Orphan MCP"
     case orphanProcess = "Orphan process"
     case duplicate = "Duplicate"
@@ -43,6 +43,11 @@ public struct Finding: Identifiable, Hashable {
     /// `ScanEngine.cacheFinding`. Kept as the trailing property so every existing call
     /// site — none of which pass it — keeps compiling unchanged.
     public var isReversible = true
+    /// The substring "never flag this" writes to `Whitelist.ignoredCommands`: the MCP
+    /// server or script name the process runs, as matched against its command line.
+    /// Nil for findings that are not processes (launchd plists, disk), which are ignored
+    /// by path instead.
+    public var ignoreKey: String?
 
     public var uptimeDescription: String {
         guard let startedAt else { return "—" }

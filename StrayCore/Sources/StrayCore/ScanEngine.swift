@@ -21,6 +21,11 @@ public final class ScanEngine: ObservableObject {
     /// throws instead of the error being swallowed.
     @Published public var lastError: String?
 
+    /// What the user has silenced. Change it only through `updateWhitelist(_:)`, which
+    /// persists it and drops the rows it now hides.
+    @Published public private(set) var whitelist: Whitelist
+    private let whitelistStore: WhitelistStore
+
     public var reclaimableBytes: Int64 {
         diskFindings.compactMap(\.bytes).reduce(0, +)
     }
@@ -46,7 +51,9 @@ public final class ScanEngine: ObservableObject {
     /// a live process scan and a 5-minute repeating `Timer` as a side effect, neither of
     /// which a unit test exercising the disk lane wants or should leave running past the
     /// test's lifetime.
-    public init(startTimer: Bool = true) {
+    public init(startTimer: Bool = true, whitelistStore: WhitelistStore = WhitelistStore()) {
+        self.whitelistStore = whitelistStore
+        self.whitelist = whitelistStore.load()
         guard startTimer else { return }
         scan()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -57,9 +64,13 @@ public final class ScanEngine: ObservableObject {
     public func scan() {
         guard !isScanning else { return }
         isScanning = true
+        let whitelist = whitelist
         Task.detached(priority: .utility) {
             let procs = ProcessScanner.scan()
-            let procFindings = Rules.evaluate(procs)
+            let procFindings = Rules.evaluate(
+                procs.filter(whitelist.allows),
+                extraMCPPatterns: whitelist.extraMCPPatterns
+            )
             let launchdFindings = LaunchdScanner.scanUserAgents() + LaunchdScanner.scanSystemDaemons()
             // Same snapshot, same pass: the port walk reuses the PID set the process
             // scan just gathered instead of enumerating processes a second time, and
@@ -74,7 +85,9 @@ public final class ScanEngine: ObservableObject {
                 workingDirectories: ProcessScanner.workingDirectories(for: Array(portsByPID.keys))
             )
             await MainActor.run {
-                self.findings = procFindings + launchdFindings
+                // The live list, not the snapshot above: an ignore added while this scan
+                // was in flight must not be undone by its result.
+                self.findings = (procFindings + launchdFindings).filter(self.whitelist.allows)
                 self.ports = portRows
                 self.lastScan = Date()
                 self.isScanning = false
@@ -240,11 +253,13 @@ public final class ScanEngine: ObservableObject {
 
             let junk = DiskScanner.scan()
             let caches = CacheCatalog.present()
-            let findings = junk.map(Self.junkFinding) + caches.map(Self.cacheFinding)
+            let all = junk.map(Self.junkFinding) + caches.map(Self.cacheFinding)
 
-            let generation = await MainActor.run { () -> Int in
+            // Filtered before sizing, so an ignored tree is never walked just to be hidden.
+            let (findings, generation) = await MainActor.run { () -> ([Finding], Int) in
+                let findings = all.filter(self.whitelist.allows)
                 self.beginSizing(for: findings)
-                return self.sizingGeneration
+                return (findings, self.sizingGeneration)
             }
 
             let sizable = findings.flatMap(\.reclaimPaths)
@@ -252,6 +267,28 @@ public final class ScanEngine: ObservableObject {
                 Task { @MainActor in self.applySize(bytes, to: url, generation: generation) }
             }
         }
+    }
+
+    /// Applies `change` to the whitelist, saves it, and hides whatever it now covers
+    /// without waiting for a rescan. Command ignores and MCP patterns act on processes
+    /// before the rules run, so those can only be reflected by rescanning.
+    public func updateWhitelist(_ change: (inout Whitelist) -> Void) {
+        var updated = whitelist
+        change(&updated)
+        updated = updated.normalized()
+        guard updated != whitelist else { return }
+
+        let rerunsRules = updated.ignoredCommands != whitelist.ignoredCommands
+            || updated.extraMCPPatterns != whitelist.extraMCPPatterns
+        whitelist = updated
+        whitelistStore.save(updated)
+
+        findings.removeAll { !updated.allows($0) }
+        let hidden = diskFindings.filter { !updated.allows($0) }.map(\.id)
+        diskFindings.removeAll { hidden.contains($0.id) }
+        sizeTally.forget(hidden)
+
+        if rerunsRules { scan() }
     }
 
     /// Internal (not `private`) so tests can seed `diskFindings` and the pending-size

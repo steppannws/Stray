@@ -165,6 +165,6 @@ direct distribution with notarization is the path, same as Pearcleaner and Stats
 
 - [ ] Developer ID signing + notarization, so builds open without `xattr` gymnastics
 - [x] Privileged helper via `SMAppService.daemon` for `/Library/LaunchDaemons`
-- [ ] Per-rule whitelist and custom patterns
+- [x] Per-rule whitelist and custom patterns
 - [x] Launch at login
 - [ ] Sparkle auto-updates
