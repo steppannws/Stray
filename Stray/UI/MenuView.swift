@@ -309,6 +309,7 @@ struct MenuView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
+            LaunchAtLoginToggle()
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless).font(.caption)
         }
