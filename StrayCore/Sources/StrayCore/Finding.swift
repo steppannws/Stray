@@ -62,6 +62,11 @@ public struct Finding: Identifiable, Hashable {
     /// `SizeProbe` — `reclaimPaths` does that (empty `reclaimPaths` means nothing is ever
     /// sized, regardless of what `path`/`pathURL` hold). No production caller today; kept
     /// as a general-purpose accessor for future UI use (e.g. reveal-in-Finder).
+    /// An orphan in `/Library/LaunchDaemons`, which only the privileged helper can remove.
+    public var isSystemDaemon: Bool {
+        kind == .orphanLaunchd && path.hasPrefix(OrphanDaemonPolicy.daemonsDirectory + "/")
+    }
+
     public var pathURL: URL? {
         path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
     }

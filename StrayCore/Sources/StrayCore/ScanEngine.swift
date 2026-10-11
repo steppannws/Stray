@@ -60,7 +60,7 @@ public final class ScanEngine: ObservableObject {
         Task.detached(priority: .utility) {
             let procs = ProcessScanner.scan()
             let procFindings = Rules.evaluate(procs)
-            let launchdFindings = LaunchdScanner.scanUserAgents()
+            let launchdFindings = LaunchdScanner.scanUserAgents() + LaunchdScanner.scanSystemDaemons()
             // Same snapshot, same pass: the port walk reuses the PID set the process
             // scan just gathered instead of enumerating processes a second time, and
             // rides the same 5-minute timer. It is libproc calls only, no I/O, so it
@@ -97,6 +97,20 @@ public final class ScanEngine: ObservableObject {
 
     public func resolve(_ finding: Finding) {
         switch finding.kind {
+        case .orphanLaunchd where finding.isSystemDaemon:
+            // Root-owned, so the helper does it. Unlike the user-agent branch below, a
+            // failure here is expected on first use (approval pending) and must be shown.
+            lastError = nil
+            let path = finding.path
+            Task {
+                do {
+                    try await HelperClient.removeOrphanDaemon(atPath: path)
+                } catch {
+                    self.lastError = "Could not remove \(finding.title): \(error.localizedDescription)"
+                }
+                self.scan()
+            }
+
         case .orphanLaunchd:
             try? LaunchdScanner.remove(finding: finding)
             // quick re-scan to reflect the change
