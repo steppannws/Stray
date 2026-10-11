@@ -1,8 +1,10 @@
+import Sparkle
 import SwiftUI
 import StrayCore
 
 struct MenuView: View {
     @EnvironmentObject var engine: ScanEngine
+    let updater: SPUUpdater
     @State private var tab: Tab = .ports
     @State private var showingIgnoreList = false
 
@@ -310,6 +312,8 @@ struct MenuView: View {
             }
             Spacer()
             LaunchAtLoginToggle()
+            CheckForUpdatesButton(updater: updater)
+                .buttonStyle(.borderless).font(.caption)
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless).font(.caption)
         }
