@@ -37,7 +37,10 @@ xcodebuild -exportArchive -archivePath "$OUT/Stray.xcarchive" \
 # Refuse to notarize anything that is not what we meant to ship: a build signed with
 # the development certificate would be rejected by the notary anyway, only later.
 codesign --verify --deep --strict "$APP"
-if ! codesign -dv --verbose=2 "$APP" 2>&1 | grep -q "Authority=Developer ID Application"; then
+# Captured first: piped straight into `grep -q`, codesign can die of SIGPIPE once grep
+# exits on its match, and pipefail turns that into a false failure.
+SIGNATURE=$(codesign -dv --verbose=2 "$APP" 2>&1)
+if ! grep -q "Authority=Developer ID Application" <<< "$SIGNATURE"; then
   echo "error: $APP is not signed with a Developer ID Application certificate" >&2
   exit 1
 fi
