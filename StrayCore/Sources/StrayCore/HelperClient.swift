@@ -25,7 +25,7 @@ enum HelperClient {
     /// Clean again once it is allowed.
     private static func ensureEnabled() throws {
         let approval = Failure(message:
-            "Allow Stray in System Settings → General → Login Items, then click Clean again.")
+            "Allow Stray in System Settings → General → Login Items. Then click Clean again.")
         switch service.status {
         case .enabled:
             return

@@ -11,7 +11,7 @@ struct IgnoreListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Right-click any finding to stop flagging it. Everything silenced is listed here.")
+            Text("Right-click a finding to ignore it. This list shows everything Stray ignores.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -41,7 +41,7 @@ struct IgnoreListView: View {
             section("Ignored paths") {
                 EditableStringList(
                     entries: engine.whitelist.ignoredPaths,
-                    placeholder: "A folder or file; everything under it is skipped",
+                    placeholder: "A folder or file. Stray ignores everything inside it.",
                     onChange: { list in engine.updateWhitelist { $0.ignoredPaths = list } }
                 )
             }

@@ -35,7 +35,7 @@ enum CacheCatalog {
                    regeneratedBy: "Next yarn install"),
         CacheEntry(id: "pkg.pnpm", name: "pnpm store",
                    paths: [h("Library/pnpm/store")], reclaim: .trash,
-                   regeneratedBy: "pnpm repopulates the store as packages are reinstalled — existing node_modules symlink into this store and will need reinstalling"),
+                   regeneratedBy: "pnpm fills the store again when you reinstall packages. Existing node_modules folders link to this store, so you will need to reinstall them."),
         CacheEntry(id: "pkg.npm", name: "npm cache",
                    paths: [h(".npm")], reclaim: .trash,
                    regeneratedBy: "Next npm install"),
@@ -55,19 +55,19 @@ enum CacheCatalog {
                    regeneratedBy: "Next Xcode build"),
         CacheEntry(id: "xcode.archives", name: "Xcode Archives",
                    paths: [h("Library/Developer/Xcode/Archives")], reclaim: .trash,
-                   regeneratedBy: "Nothing — these are shipped build archives, delete only if you no longer need to symbolicate old crashes"),
+                   regeneratedBy: "Nothing. These are archives of shipped builds. Remove them only if you no longer need to symbolicate old crashes."),
         CacheEntry(id: "xcode.device-support", name: "iOS DeviceSupport",
                    paths: [h("Library/Developer/Xcode/iOS DeviceSupport")], reclaim: .trash,
                    regeneratedBy: "Reconnecting the device"),
         CacheEntry(id: "xcode.simulators", name: "Unavailable simulators",
                    paths: [h("Library/Developer/CoreSimulator/Devices")],
                    reclaim: .simctlDeleteUnavailable,
-                   regeneratedBy: "Xcode recreates simulators on demand — only runtimes with no matching Xcode are removed"),
+                   regeneratedBy: "Xcode creates simulators again when needed. Stray removes only runtimes with no matching Xcode."),
 
         // Allowlisted generic caches
         CacheEntry(id: "cache.dot-cache", name: "~/.cache",
                    paths: [h(".cache")], reclaim: .trash,
-                   regeneratedBy: "Re-downloaded by the tools that wrote it — can be a large download if ML tool caches (e.g. huggingface, torch) live here"),
+                   regeneratedBy: "The tools that wrote it download it again. This can be a large download if ML tool caches (e.g. huggingface, torch) live here."),
         CacheEntry(id: "cache.homebrew", name: "Homebrew downloads",
                    paths: [h("Library/Caches/Homebrew")], reclaim: .trash,
                    regeneratedBy: "Next brew install"),
@@ -81,7 +81,7 @@ enum CacheCatalog {
         // Docker
         CacheEntry(id: "docker.dangling", name: "Docker dangling images",
                    paths: [], reclaim: .dockerImagePrune,
-                   regeneratedBy: "Rebuilding images — only untagged layers are removed"),
+                   regeneratedBy: "Rebuilding images. Stray removes only untagged layers."),
     ]
 
     /// Entries whose targets actually exist on this machine.
