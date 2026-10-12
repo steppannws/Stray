@@ -144,7 +144,7 @@ struct MenuView: View {
                 icon: "checkmark.circle",
                 tint: .green,
                 title: "No stray processes",
-                detail: "Orphaned MCP servers, duplicates and long-dead dev tools show up here."
+                detail: "Orphaned MCP servers, duplicates and long-dead dev tools appear here."
             )
         } else {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -165,8 +165,8 @@ struct MenuView: View {
                 tint: engine.lastDiskScan == nil ? .secondary : .green,
                 title: engine.lastDiskScan == nil ? "Not scanned yet" : "Nothing to reclaim",
                 detail: engine.lastDiskScan == nil
-                    ? "Scanning walks your project trees and tool caches. It is never automatic."
-                    : "Build artifacts, dependency trees and tool caches would be listed here."
+                    ? "A scan reads your project folders and tool caches. Stray never starts a scan automatically."
+                    : "Build artifacts, dependency trees and tool caches appear here when Stray finds them."
             )
         } else {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -185,16 +185,16 @@ struct MenuView: View {
     @ViewBuilder
     private func ignoreMenu(for finding: Finding) -> some View {
         if let key = finding.ignoreKey {
-            Button("Never flag \u{201C}\(key.prefix(60))\u{201D}") {
+            Button("Ignore \u{201C}\(key.prefix(60))\u{201D}") {
                 engine.updateWhitelist { $0.ignoredCommands.append(key) }
             }
         } else if finding.pid == nil, finding.pathURL != nil {
-            Button("Never flag this path") {
+            Button("Ignore this path") {
                 engine.updateWhitelist { $0.ignoredPaths.append(finding.path) }
             }
             if finding.kind == .projectJunk {
                 let project = (finding.path as NSString).deletingLastPathComponent
-                Button("Never flag anything in \((project as NSString).lastPathComponent)") {
+                Button("Ignore everything in \((project as NSString).lastPathComponent)") {
                     engine.updateWhitelist { $0.ignoredPaths.append(project) }
                 }
             }
